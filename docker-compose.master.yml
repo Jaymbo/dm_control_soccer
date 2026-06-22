@@ -34,7 +34,7 @@ services:
       - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       # WARNING: Only expose via VPN/Cloudflare!
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     networks:
       - optuna-network
     healthcheck:

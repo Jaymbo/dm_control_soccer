@@ -89,22 +89,11 @@ echo -e "${GREEN}✓ PostgreSQL password generated: $POSTGRES_PASSWORD${NC}"
 echo ""
 
 # ============================================
-# 3. Stop Old Stack & Start New One
+# 3. Start Master Stack (Port 5433 to avoid conflicts)
 # ============================================
-echo -e "${YELLOW}[3/4] Preparing Master Stack...${NC}"
+echo -e "${YELLOW}[3/4] Starting Master Stack...${NC}"
 
-# Stop any existing stack (to free up ports)
-echo -e "${YELLOW}Stopping any existing containers...${NC}"
-docker-compose -f docker-compose.master.yml down 2>/dev/null || true
-
-# Remove old containers if they exist
-docker rm -f optuna-postgres optuna-mlflow 2>/dev/null || true
-
-# Clean start
-echo -e "${GREEN}✓ Old containers cleaned up${NC}"
-echo ""
-
-echo -e "${YELLOW}Starting Master Stack...${NC}"
+echo -e "${YELLOW}Using port 5433 for PostgreSQL (to avoid conflicts)...${NC}"
 docker-compose -f docker-compose.master.yml up -d
 
 # Wait for services to be healthy
@@ -164,7 +153,7 @@ echo "   - Access → Tunnels → Create a tunnel"
 echo "   - Name: soccer-master"
 echo "   - Install cloudflared on this server"
 echo "   - Add public hostnames:"
-echo "     * optuna.jasondietrich.de → tcp://localhost:5432"
+echo "     * optuna.jasondietrich.de → tcp://localhost:5433"
 echo "     * mlflow.jasondietrich.de → http://localhost:5000"
 echo ""
 echo "2. After Cloudflare is configured, workers can connect with:"
@@ -197,7 +186,7 @@ Optuna Dashboard: http://optuna.jasondietrich.de
 Local URLs (on server only):
 MLflow UI: http://localhost:5000
 Optuna Dashboard: http://localhost:8080
-PostgreSQL: localhost:5432
+PostgreSQL: localhost:5433
 
 Cloudflare Setup Instructions:
 1. Go to https://one.dash.cloudflare.com/
@@ -205,7 +194,7 @@ Cloudflare Setup Instructions:
 3. Name: soccer-master
 4. Install cloudflared on this server
 5. Add public hostnames:
-   - optuna.jasondietrich.de → tcp://localhost:5432
+   - optuna.jasondietrich.de → tcp://localhost:5433
    - mlflow.jasondietrich.de → http://localhost:5000
 EOF
 
