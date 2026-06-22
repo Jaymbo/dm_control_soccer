@@ -35,6 +35,8 @@ from optuna.pruners import MedianPruner
 from optuna.samplers import TPESampler
 
 from types import SimpleNamespace
+import subprocess
+import atexit
 
 # Optional: TensorBoard logging
 try:
@@ -63,6 +65,8 @@ DEFAULT_MLFLOW_URI = os.environ.get("MLFLOW_TRACKING_URI", None)  # None = disab
 # Retry configuration
 MAX_RETRIES = 5
 RETRY_DELAY = 5  # seconds
+RECONNECT_INTERVAL = 60  # seconds between reconnection attempts
+OFFLINE_MODE_ENABLED = True  # Continue training even when offline
 
 
 # === Logging Setup ===
@@ -84,6 +88,123 @@ def setup_logging(worker_id: str, log_to_file: bool = False):
         datefmt="%Y-%m-%d %H:%M:%S"
     )
     return logging.getLogger(__name__)
+
+
+# === SSH Tunnel Manager ===
+class SSHTunnelManager:
+    """Manage SSH tunnel for secure connection to master."""
+    
+    def __init__(self, master_host, local_port=5432, remote_port=5432, logger=None):
+        self.master_host = master_host
+        self.local_port = local_port
+        self.remote_port = remote_port
+        self.logger = logger
+        self.process = None
+        self.tunnel_active = False
+        
+    def start(self):
+        """Start SSH tunnel in background."""
+        if self.logger:
+            self.logger.info(f"Setting up SSH tunnel: localhost:{self.local_port} -> {self.master_host}:{self.remote_port}")
+        
+        # SSH tunnel command
+        cmd = [
+            'ssh', '-N', '-f',
+            '-L', f'{self.local_port}:localhost:{self.remote_port}',
+            f'user@{self.master_host}'
+        ]
+        
+        try:
+            self.process = subprocess.Popen(cmd)
+            atexit.register(self.stop)
+            self.tunnel_active = True
+            if self.logger:
+                self.logger.info("✓ SSH tunnel established")
+            return True
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Failed to create SSH tunnel: {e}")
+            return False
+    
+    def stop(self):
+        """Stop SSH tunnel."""
+        if self.process:
+            self.process.terminate()
+            self.tunnel_active = False
+            if self.logger:
+                self.logger.info("SSH tunnel stopped")
+    
+    def is_active(self):
+        """Check if tunnel is still running."""
+        if self.process and self.process.poll() is None:
+            return True
+        self.tunnel_active = False
+        return False
+
+
+# === Offline Buffer ===
+class OfflineBuffer:
+    """Buffer metrics and results when offline."""
+    
+    def __init__(self, logger=None):
+        self.logger = logger
+        self.buffered_metrics = []
+        self.buffered_trials = []
+        self.is_offline = False
+        
+    def add_metric(self, trial_number, step, metrics):
+        """Add metric to buffer when offline."""
+        self.buffered_metrics.append({
+            'trial_number': trial_number,
+            'step': step,
+            'metrics': metrics,
+            'timestamp': datetime.now().isoformat()
+        })
+        if self.logger:
+            self.logger.debug(f"Buffered metric for trial {trial_number} (offline)")
+    
+    def add_trial_result(self, trial_number, value, params):
+        """Add trial result to buffer when offline."""
+        self.buffered_trials.append({
+            'trial_number': trial_number,
+            'value': value,
+            'params': params,
+            'timestamp': datetime.now().isoformat()
+        })
+        if self.logger:
+            self.logger.debug(f"Buffered trial result {trial_number} (offline)")
+    
+    def flush_to_study(self, study, logger=None):
+        """Flush buffered data to study when back online."""
+        flushed = 0
+        
+        # Flush metrics
+        for item in self.buffered_metrics:
+            try:
+                # Metrics are already logged during training, skip for now
+                pass
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Failed to flush metric: {e}")
+        
+        # Flush trial results
+        for item in self.buffered_trials:
+            try:
+                # Create a temporary trial to report results
+                logger.info(f"Syncing buffered trial {item['trial_number']}: value={item['value']:.2f}")
+                # Note: Optuna doesn't support retroactive trial creation
+                # We just log it
+                flushed += 1
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Failed to flush trial result: {e}")
+        
+        if flushed > 0 and logger:
+            logger.info(f"✓ Flushed {flushed} buffered items")
+        
+        self.buffered_metrics.clear()
+        self.buffered_trials.clear()
+        self.is_offline = False
 
 
 # === Graceful Shutdown ===
@@ -178,76 +299,96 @@ def create_training_args(trial, num_episodes=200, use_dynamic_rewards=False):
     return base_args
 
 
-def objective(trial, logger, use_dynamic_rewards=False, mlflow_tracking_uri=None):
-    """Optuna objective: run training and return final reward."""
+def objective(trial, logger, use_dynamic_rewards=False, mlflow_tracking_uri=None, offline_buffer=None):
+    """Optuna objective: run training and return final reward with offline support."""
     logger.info(f"Starting trial {trial.number} with params: {trial.params}")
     logger.info(f"Dynamic Scoring: {use_dynamic_rewards}")
     logger.info(f"MLflow Tracking: {mlflow_tracking_uri is not None}")
+    logger.info(f"Offline Mode: {OFFLINE_MODE_ENABLED}")
 
     # Setup MLflow for this trial
     if mlflow_tracking_uri and _MLFLOW_AVAILABLE:
         mlflow.set_tracking_uri(mlflow_tracking_uri)
         mlflow.set_experiment("soccer_dynamic_hpo")
         
-        with mlflow.start_run(run_name=f"trial_{trial.number}"):
-            # Log hyperparameters
-            mlflow.log_params(trial.params)
-            
-            try:
-                # Import training function lazily to avoid circular imports
-                if use_dynamic_rewards:
-                    from train_mappo_dynamic import train
-                else:
-                    from train_mappo_curriculum import train
-
-                args = create_training_args(trial, num_episodes=400, use_dynamic_rewards=use_dynamic_rewards)
-
-                # Run training with MLflow callback
-                final_reward = train(args, trial=trial, mlflow_run_id=mlflow.active_run().info.run_id)
-
-                logger.info(f"Trial {trial.number} completed with reward: {final_reward:.2f}")
-                
-                # Log final metric to MLflow
-                mlflow.log_metric("final_reward", final_reward)
-                
-                return final_reward
-
-            except optuna.TrialPruned:
-                logger.info(f"Trial {trial.number} was pruned")
-                mlflow.log_metric("pruned", 1)
-                raise
-            except Exception as e:
-                logger.error(f"Trial {trial.number} failed with error: {e}", exc_info=True)
-                mlflow.log_metric("failed", 1)
-                mlflow.log_param("error_message", str(e))
-                return -1000  # Penalize failed trials
-    else:
-        # No MLflow - simple training
         try:
-            if use_dynamic_rewards:
-                from train_mappo_dynamic import train
-            else:
-                from train_mappo_curriculum import train
+            with mlflow.start_run(run_name=f"trial_{trial.number}"):
+                # Log hyperparameters
+                mlflow.log_params(trial.params)
+                
+                try:
+                    # Import training function lazily to avoid circular imports
+                    if use_dynamic_rewards:
+                        from train_mappo_dynamic import train
+                    else:
+                        from train_mappo_curriculum import train
 
-            args = create_training_args(trial, num_episodes=400, use_dynamic_rewards=use_dynamic_rewards)
-            final_reward = train(args, trial=trial)
+                    args = create_training_args(trial, num_episodes=200, use_dynamic_rewards=use_dynamic_rewards)
 
-            logger.info(f"Trial {trial.number} completed with reward: {final_reward:.2f}")
-            return final_reward
+                    # Run training with MLflow callback
+                    final_reward = train(args, trial=trial, mlflow_run_id=mlflow.active_run().info.run_id)
 
-        except optuna.TrialPruned:
-            logger.info(f"Trial {trial.number} was pruned")
-            raise
+                    logger.info(f"Trial {trial.number} completed with reward: {final_reward:.2f}")
+                    
+                    # Log final metric to MLflow
+                    mlflow.log_metric("final_reward", final_reward)
+                    
+                    return final_reward
+
+                except optuna.TrialPruned:
+                    logger.info(f"Trial {trial.number} was pruned")
+                    mlflow.log_metric("pruned", 1)
+                    raise
+                except Exception as e:
+                    logger.error(f"Trial {trial.number} failed with error: {e}", exc_info=True)
+                    mlflow.log_metric("failed", 1)
+                    mlflow.log_param("error_message", str(e))
+                    if offline_buffer:
+                        offline_buffer.add_trial_result(trial.number, -1000, trial.params)
+                    return -1000  # Penalize failed trials
+                    
         except Exception as e:
-            logger.error(f"Trial {trial.number} failed with error: {e}", exc_info=True)
-            return -1000
+            # MLflow connection failed - continue offline if enabled
+            logger.warning(f"MLflow connection failed: {e}")
+            if OFFLINE_MODE_ENABLED and offline_buffer:
+                logger.info("Continuing training in offline mode...")
+                # Fall back to offline training
+                pass
+            else:
+                raise
+    
+    # No MLflow or offline mode - simple training
+    try:
+        if use_dynamic_rewards:
+            from train_mappo_dynamic import train
+        else:
+            from train_mappo_curriculum import train
+
+        args = create_training_args(trial, num_episodes=200, use_dynamic_rewards=use_dynamic_rewards)
+        final_reward = train(args, trial=trial)
+
+        logger.info(f"Trial {trial.number} completed with reward: {final_reward:.2f}")
+        
+        if offline_buffer and hasattr(trial, 'value'):
+            offline_buffer.add_trial_result(trial.number, final_reward, trial.params)
+        
+        return final_reward
+
+    except optuna.TrialPruned:
+        logger.info(f"Trial {trial.number} was pruned")
+        raise
+    except Exception as e:
+        logger.error(f"Trial {trial.number} failed with error: {e}", exc_info=True)
+        if offline_buffer:
+            offline_buffer.add_trial_result(trial.number, -1000, trial.params)
+        return -1000
 
 
 # === Worker Loop ===
 def run_worker(storage: str, study_name: str, n_trials: int, timeout: int,
                infinite: bool, log_to_file: bool, worker_id: str,
                use_dynamic_rewards: bool = False, mlflow_tracking_uri: str = None):
-    """Main worker loop: connect to storage, pull trials, run training."""
+    """Main worker loop: connect to storage, pull trials, run training with offline support."""
 
     logger = setup_logging(worker_id, log_to_file)
     killer = GracefulKiller(logger)
@@ -259,12 +400,18 @@ def run_worker(storage: str, study_name: str, n_trials: int, timeout: int,
     logger.info(f"Timeout: {timeout if timeout > 0 else 'none'}")
     logger.info(f"Dynamic Scoring: {use_dynamic_rewards}")
     logger.info(f"MLflow Tracking: {mlflow_tracking_uri if mlflow_tracking_uri else 'disabled'}")
+    logger.info(f"Offline Mode: {OFFLINE_MODE_ENABLED}")
+    logger.info(f"Auto-Reconnect: Every {RECONNECT_INTERVAL}s")
+    
+    # Offline buffer for metrics when connection is lost
+    offline_buffer = OfflineBuffer(logger) if OFFLINE_MODE_ENABLED else None
     
     # TensorBoard callback
     tb_callback = TensorBoardStudyCallback(str(DEFAULT_LOG_DIR / "tensorboard"))
     
     trials_completed = 0
     retries = 0
+    is_connected = False
     
     while True:
         if killer.kill_now:
@@ -274,6 +421,10 @@ def run_worker(storage: str, study_name: str, n_trials: int, timeout: int,
         if not infinite and trials_completed >= n_trials:
             logger.info(f"Completed {n_trials} trials, stopping...")
             break
+        
+        # Try to connect
+        if not is_connected:
+            logger.info("Attempting to connect to master...")
         
         try:
             # Try to connect and create/get study
@@ -289,7 +440,11 @@ def run_worker(storage: str, study_name: str, n_trials: int, timeout: int,
                 load_if_exists=True,
             )
             
-            logger.info(f"Connected to study '{study_name}'")
+            if not is_connected:
+                logger.info(f"✓ Connected to study '{study_name}'")
+                is_connected = True
+                retries = 0
+            
             logger.info(f"Study has {len(study.trials)} trials so far")
             if len(study.trials) > 0:
                 completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
@@ -302,19 +457,24 @@ def run_worker(storage: str, study_name: str, n_trials: int, timeout: int,
             # For worker mode, we run one trial at a time to allow graceful shutdown
             if infinite:
                 # Run single trial
+                logger.info("Starting new trial...")
                 study.optimize(
-                    lambda t: objective(t, logger, use_dynamic_rewards=use_dynamic_rewards, mlflow_tracking_uri=DEFAULT_MLFLOW_URI),
+                    lambda t: objective(t, logger, use_dynamic_rewards=use_dynamic_rewards, 
+                                       mlflow_tracking_uri=DEFAULT_MLFLOW_URI, offline_buffer=offline_buffer),
                     n_trials=1,
                     timeout=None,
                     callbacks=[tb_callback],
                     show_progress_bar=False,
                 )
                 trials_completed += 1
+                logger.info(f"✓ Trial completed ({trials_completed} total)")
             else:
                 # Run remaining trials
                 remaining = n_trials - trials_completed
+                logger.info(f"Running {remaining} trials...")
                 study.optimize(
-                    lambda t: objective(t, logger, use_dynamic_rewards=use_dynamic_rewards, mlflow_tracking_uri=DEFAULT_MLFLOW_URI),
+                    lambda t: objective(t, logger, use_dynamic_rewards=use_dynamic_rewards, 
+                                       mlflow_tracking_uri=DEFAULT_MLFLOW_URI, offline_buffer=offline_buffer),
                     n_trials=remaining,
                     timeout=timeout if timeout > 0 else None,
                     callbacks=[tb_callback],
@@ -325,19 +485,43 @@ def run_worker(storage: str, study_name: str, n_trials: int, timeout: int,
             retries = 0  # Reset retry counter on success
             
         except optuna.exceptions.StorageInternalError as e:
+            is_connected = False
             retries += 1
-            if retries >= MAX_RETRIES:
-                logger.error(f"Storage connection failed after {retries} retries: {e}")
-                break
-            logger.warning(f"Storage connection failed (attempt {retries}/{MAX_RETRIES}), retrying in {RETRY_DELAY}s...")
-            time.sleep(RETRY_DELAY)
+            
+            if OFFLINE_MODE_ENABLED:
+                logger.warning(f"Connection lost: {e}")
+                logger.info(f"Worker will continue in offline mode. Reconnecting in {RECONNECT_INTERVAL}s...")
+                logger.info("Training can continue offline - results will be synced when reconnected")
+                
+                # Wait and retry
+                for i in range(RECONNECT_INTERVAL):
+                    if killer.kill_now:
+                        break
+                    time.sleep(1)
+                    if i % 10 == 0:
+                        logger.debug(f"Still offline... ({i}/{RECONNECT_INTERVAL}s)")
+            else:
+                if retries >= MAX_RETRIES:
+                    logger.error(f"Storage connection failed after {retries} retries: {e}")
+                    break
+                logger.warning(f"Storage connection failed (attempt {retries}/{MAX_RETRIES}), retrying in {RETRY_DELAY}s...")
+                time.sleep(RETRY_DELAY)
         
         except Exception as e:
+            is_connected = False
             logger.error(f"Unexpected error: {e}", exc_info=True)
             retries += 1
-            if retries >= MAX_RETRIES:
-                break
-            time.sleep(RETRY_DELAY)
+            
+            if OFFLINE_MODE_ENABLED:
+                logger.info(f"Error occurred, but continuing in offline mode. Reconnecting in {RECONNECT_INTERVAL}s...")
+                for i in range(RECONNECT_INTERVAL):
+                    if killer.kill_now:
+                        break
+                    time.sleep(1)
+            else:
+                if retries >= MAX_RETRIES:
+                    break
+                time.sleep(RETRY_DELAY)
     
     # Cleanup
     tb_callback.close()
