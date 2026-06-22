@@ -58,18 +58,27 @@ python train_mappo_curriculum.py \
 ```bash
 # Lokale Optimierung (SQLite, 50 Trials)
 python optimize_curriculum.py --n-trials 50
-
-# Distributed mit MLflow (empfohlen für Produktion)
-# 1. Master starten:
-docker-compose -f docker-compose.master.yml up -d
-
-# 2. Worker starten:
-python worker_entrypoint.py \
-  --storage postgresql://optuna:password@localhost:5432/optuna_db \
-  --mlflow-tracking-uri http://localhost:5000 \
-  --infinite \
-  --use-dynamic-rewards
 ```
+
+### C. Distributed Setup (Production) ⭐
+
+**Master Server:**
+```bash
+git clone git@github.com:Jaymbo/dm_control_soccer.git
+cd dm_control_soccer
+./scripts/setup_master.sh
+```
+
+**Worker (beliebig viele):**
+```bash
+git clone git@github.com:Jaymbo/dm_control_soccer.git
+cd dm_control_soccer
+./scripts/setup_worker.sh
+```
+
+→ **Das ist alles!** Worker verbinden sich automatisch und starten Training.
+
+**Ausführliche Anleitung:** Siehe [DEPLOYMENT.md](DEPLOYMENT.md)
 
 ---
 
