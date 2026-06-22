@@ -103,7 +103,7 @@ sudo cloudflared service install <TOKEN>
 2. **Add Public Hostname** wählen:
    - **Subdomain:** `optuna`
    - **Domain:** deine-domain.com (oder .workers.dev)
-   - **Service:** `tcp://localhost:5432`
+   - **Service:** `tcp://localhost:5433`
 3. Speichern
 
 **Schritt D: Zweiten Hostname für MLflow**
@@ -215,7 +215,7 @@ sudo tailscale up
 
 **Worker Connection String:**
 ```
-postgresql://optuna:PASSWORT@TAILSCALE_IP:5432/optuna_db
+postgresql://optuna:PASSWORT@TAILSCALE_IP:5433/optuna_db
 MLFLOW_TRACKING_URI=http://TAILSCALE_IP:5000
 ```
 
@@ -224,10 +224,10 @@ MLFLOW_TRACKING_URI=http://TAILSCALE_IP:5000
 **Auf jedem Worker:**
 ```bash
 # SSH Tunnel öffnen (im Hintergrund)
-ssh -N -L 5432:localhost:5432 -L 5000:localhost:5000 user@server-ip &
+ssh -N -L 5432:localhost:5433 -L 5000:localhost:5000 user@server-ip &
 
 # Worker Connection:
-OPTUNA_STORAGE=postgresql://optuna:PASSWORT@localhost:5432/optuna_db
+OPTUNA_STORAGE=postgresql://optuna:PASSWORT@localhost:5433/optuna_db
 MLFLOW_TRACKING_URI=http://localhost:5000
 ```
 
@@ -262,7 +262,7 @@ docker-compose -f docker-compose.master.yml ps
 docker-compose -f docker-compose.master.yml logs -f
 
 # Optuna Studie prüfen
-optuna-dashboard postgresql://optuna:PASSWORT@localhost:5432/optuna_db
+optuna-dashboard postgresql://optuna:PASSWORT@localhost:5433/optuna_db
 ```
 
 **Auf Worker:**
@@ -291,7 +291,7 @@ cd dm_control_soccer
 
 # Cloudflare Tunnel einrichten (im Script "y" wählen)
 # → Tunnel Name: soccer-master
-# → Hostname: optuna.myapp.workers.dev → tcp://localhost:5432
+# → Hostname: optuna.myapp.workers.dev → tcp://localhost:5433
 # → Hostname: mlflow.myapp.workers.dev → http://localhost:5000
 ```
 

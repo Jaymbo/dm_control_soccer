@@ -12,7 +12,7 @@ Features:
 
 Usage:
     # Run until no more trials available
-    python worker_entrypoint.py --storage postgresql://user:pass@host:5432/dbname
+    python worker_entrypoint.py --storage postgresql://user:pass@host:5433/dbname
 
     # Run exactly 10 trials
     python worker_entrypoint.py --storage postgresql://... --n-trials 10
@@ -94,7 +94,7 @@ def setup_logging(worker_id: str, log_to_file: bool = False):
 class SSHTunnelManager:
     """Manage SSH tunnel for secure connection to master."""
     
-    def __init__(self, master_host, local_port=5432, remote_port=5432, logger=None):
+    def __init__(self, master_host, local_port=5433, remote_port=5433, logger=None):
         self.master_host = master_host
         self.local_port = local_port
         self.remote_port = remote_port
@@ -553,7 +553,7 @@ def parse_args():
         "--storage",
         type=str,
         default=DEFAULT_STORAGE,
-        help="Optuna storage URL (sqlite:///optuna.db or postgresql://user:pass@host:5432/db)"
+        help="Optuna storage URL (sqlite:///optuna.db or postgresql://user:pass@host:5433/db)"
     )
     parser.add_argument(
         "--study-name",

@@ -151,9 +151,9 @@ Jeder Trial logged:
 
 2. **SSH-Tunnel** (einfach)
    ```bash
-   ssh -L 5432:localhost:5432 user@master
+   ssh -L 5433:localhost:5433 user@master
    ```
-   - Worker verbinden mit `localhost:5432`
+   - Worker verbinden mit `localhost:5433`
 
 3. **WireGuard VPN** (performant)
    - Private IPs für alle Worker

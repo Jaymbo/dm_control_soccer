@@ -12,7 +12,7 @@
 #   - USE_GPU: Enable GPU support (optional)
 #
 # Example:
-#   OPTUNA_STORAGE=postgresql://optuna:password@server:5432/optuna_db \
+#   OPTUNA_STORAGE=postgresql://optuna:password@server:5433/optuna_db \
 #   MLFLOW_TRACKING_URI=http://server:5000 \
 #   OPTUNA_N_TRIALS=100 \
 #   docker-compose -f docker-compose.worker.yml up -d

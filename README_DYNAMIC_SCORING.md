@@ -89,7 +89,7 @@ docker-compose -f docker-compose.master.yml up -d
 
 ```bash
 python worker_entrypoint.py \
-  --storage postgresql://optuna:PASSWORD@host:5432/optuna_db \
+  --storage postgresql://optuna:PASSWORD@host:5433/optuna_db \
   --study-name soccer_dynamic_v1 \
   --use-dynamic-rewards \
   --infinite \
@@ -100,7 +100,7 @@ Oder per Docker Compose (`docker-compose.worker.yml`):
 
 ```bash
 # .env im Worker-Verzeichnis
-OPTUNA_STORAGE=postgresql://optuna:PASSWORD@host:5432/optuna_db
+OPTUNA_STORAGE=postgresql://optuna:PASSWORD@host:5433/optuna_db
 OPTUNA_STUDY_NAME=soccer_dynamic_v1
 OPTUNA_USE_DYNAMIC_REWARDS=true
 OPTUNA_N_TRIALS=100
@@ -113,7 +113,7 @@ docker-compose -f docker-compose.worker.yml up -d
 ### 3. Dashboard
 
 ```bash
-optuna-dashboard postgresql://optuna:PASSWORD@host:5432/optuna_db
+optuna-dashboard postgresql://optuna:PASSWORD@host:5433/optuna_db
 ```
 
 bzw. `http://localhost:8080` wenn du Docker Compose Master nutzt.

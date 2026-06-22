@@ -139,12 +139,12 @@ Access Dashboard: `http://your-server-ip:8080`
 
 Workers connect via SSH tunnel:
 ```bash
-ssh -L 5432:localhost:5432 user@your-server
+ssh -L 5433:localhost:5433:localhost:5432 user@your-server
 ```
 
 Connection string for workers:
 ```
-postgresql://optuna:password@localhost:5432/optuna_db
+postgresql://optuna:password@localhost:5433/optuna_db
 ```
 
 #### Option C: WireGuard VPN

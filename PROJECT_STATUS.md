@@ -47,7 +47,7 @@
 │                  MASTER (24/7 Server)                        │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
 │  │  MLflow      │  │  PostgreSQL  │  │  Dashboards      │   │
-│  │  :5000       │  │  :5432       │  │  :8080           │   │
+│  │  :5000       │  │  :5433       │  │  :8080           │   │
 │  └──────────────┘  └──────────────┘  └──────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
                           ▲
@@ -130,7 +130,7 @@ docker-compose -f docker-compose.master.yml up -d
 
 # Worker starten
 python worker_entrypoint.py \
-  --storage postgresql://optuna:password@localhost:5432/optuna_db \
+  --storage postgresql://optuna:password@localhost:5433/optuna_db \
   --mlflow-tracking-uri http://localhost:5000 \
   --infinite \
   --use-dynamic-rewards

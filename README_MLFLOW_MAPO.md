@@ -15,7 +15,7 @@ Diese Anleitung beschreibt das Setup für **dezentrales Training** mit:
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
 │  │  MLflow      │  │  PostgreSQL  │  │  Dashboards      │   │
 │  │  Server      │  │  (Optuna)    │  │  :5000 / :8080   │   │
-│  │  :5000       │  │  :5432       │  │                  │   │
+│  │  :5000       │  │  :5433       │  │                  │   │
 │  └──────────────┘  └──────────────┘  └──────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
                           ▲
@@ -57,7 +57,7 @@ docker-compose -f docker-compose.master.yml up -d
 **Zugänge:**
 - MLflow UI: http://localhost:5000
 - Optuna Dashboard: http://localhost:8080
-- PostgreSQL: localhost:5432 (⚠️ nur via VPN/Cloudflare!)
+- PostgreSQL: localhost:5433 (⚠️ nur via VPN/Cloudflare!)
 
 ### Worker (Slaves)
 
@@ -106,7 +106,7 @@ DASHBOARD_PORT=8080
 # .env (auf Worker-Geräten)
 
 # Verbindung zu Master-Server
-OPTUNA_STORAGE=postgresql://optuna:PASSWORD@MASTER_IP:5432/optuna_db
+OPTUNA_STORAGE=postgresql://optuna:PASSWORD@MASTER_IP:5433/optuna_db
 MLFLOW_TRACKING_URI=http://MASTER_IP:5000
 
 # Studie
@@ -156,7 +156,7 @@ python worker_entrypoint.py \
 
 # Mit Master-Verbindung (Produktion)
 python worker_entrypoint.py \
-  --storage postgresql://optuna:PASSWORD@MASTER_IP:5432/optuna_db \
+  --storage postgresql://optuna:PASSWORD@MASTER_IP:5433/optuna_db \
   --mlflow-tracking-uri http://MASTER_IP:5000 \
   --n-trials 10 \
   --use-dynamic-rewards
@@ -251,7 +251,7 @@ cat > /etc/cloudflared/config.yml << EOF
 tunnel: optuna-tunnel
 ingress:
   - hostname: optuna.your-domain.com
-    service: tcp://localhost:5432
+    service: tcp://localhost:5433
   - service: http_status:404
 EOF
 
@@ -268,12 +268,12 @@ postgresql://optuna:password@optuna.your-domain.com:443/optuna_db
 **Option B: SSH-Tunnel (einfach)**
 ```bash
 # Auf Worker
-ssh -L 5432:localhost:5432 user@master-server
+ssh -L 5432:localhost:5433 user@master-server
 ```
 
 Connection-String:
 ```
-postgresql://optuna:password@localhost:5432/optuna_db
+postgresql://optuna:password@localhost:5433/optuna_db
 ```
 
 **Option C: WireGuard VPN**
@@ -314,7 +314,7 @@ python -c "import mlflow; mlflow.set_tracking_uri('http://MASTER_IP:5000'); mlfl
 
 ```bash
 # Studie prüfen
-optuna-dashboard postgresql://optuna:password@MASTER_IP:5432/optuna_db
+optuna-dashboard postgresql://optuna:password@MASTER_IP:5433/optuna_db
 ```
 
 ### Out of Memory
