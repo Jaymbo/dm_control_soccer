@@ -105,18 +105,21 @@ echo -e "${GREEN}✓ Python found: $(python3 --version)${NC}"
 
 # Install system dependencies (quietly)
 echo -e "${YELLOW}Installing system packages...${NC}"
-sudo apt-get update -qq
-sudo apt-get install -y -qq --no-install-recommends \
-    build-essential \
-    libgl1-mesa-dev \
-    libgl1 \
-    libglew-dev \
-    libosmesa6-dev \
-    libglfw3 \
-    libglib2.0-0 \
-    libgomp1 2>/dev/null || true
-
-echo -e "${GREEN}✓ System packages installed${NC}"
+if command -v apt-get &> /dev/null; then
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq --no-install-recommends \
+        build-essential \
+        libgl1-mesa-dev \
+        libgl1 \
+        libglew-dev \
+        libosmesa6-dev \
+        libglfw3 \
+        libglib2.0-0 \
+        libgomp1 2>/dev/null || true
+    echo -e "${GREEN}✓ System packages installed${NC}"
+else
+    echo -e "${YELLOW}apt-get not found, skipping system packages${NC}"
+fi
 
 # Install Python dependencies
 echo -e "${YELLOW}Installing Python packages (this may take 2-3 minutes)...${NC}"
