@@ -1,0 +1,80 @@
+# Docker Compose for MLflow + Optuna Worker (Slave)
+# Run this on any machine that should contribute compute resources.
+# Workers can come and go as they please - no sync required during training.
+#
+# Usage:
+#   docker-compose -f docker-compose.worker.yml up -d
+#
+# Configuration (via .env or command line):
+#   - OPTUNA_STORAGE: PostgreSQL connection to master
+#   - MLFLOW_TRACKING_URI: MLflow server URL
+#   - OPTUNA_N_TRIALS: Number of trials to run
+#   - USE_GPU: Enable GPU support (optional)
+#
+# Example:
+#   OPTUNA_STORAGE=postgresql://optuna:password@server:5432/optuna_db \
+#   MLFLOW_TRACKING_URI=http://server:5000 \
+#   OPTUNA_N_TRIALS=100 \
+#   docker-compose -f docker-compose.worker.yml up -d
+
+version: "3.8"
+
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: optuna-worker
+    restart: unless-stopped
+    environment:
+      # Required: Connection to central Optuna storage (PostgreSQL on master)
+      OPTUNA_STORAGE: ${OPTUNA_STORAGE:-sqlite:///optuna.db}
+      
+      # Required: Connection to MLflow server (for experiment tracking)
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://localhost:5000}
+      
+      # Optional: Study name (must match master)
+      OPTUNA_STUDY_NAME: ${OPTUNA_STUDY_NAME:-soccer_dynamic_v1}
+      
+      # Number of trials to run (set high or use --infinite)
+      OPTUNA_N_TRIALS: ${OPTUNA_N_TRIALS:-10}
+      
+      # Timeout in seconds (0 = no timeout)
+      OPTUNA_TIMEOUT: ${OPTUNA_TIMEOUT:-0}
+      
+      # Optional: Worker ID for logging
+      OPTUNA_WORKER_ID: ${OPTUNA_WORKER_ID:-}
+      
+      # Enable file logging
+      OPTUNA_LOG_TO_FILE: ${OPTUNA_LOG_TO_FILE:-false}
+      
+      # Use Dynamic Scoring rewards
+      OPTUNA_USE_DYNAMIC_REWARDS: ${OPTUNA_USE_DYNAMIC_REWARDS:-true}
+      
+      # MuJoCo renderer
+      MUJOCO_GL: ${MUJOCO_GL:-}
+      
+      # PyTorch device (auto-detected if not set)
+      PYTORCH_DEVICE: ${PYTORCH_DEVICE:-}
+    volumes:
+      # Persist logs locally
+      - ./logs:/workspace/logs
+      # Optional: Mount MLflow artifacts for offline caching
+      - ./mlruns:/workspace/mlruns
+    # GPU support (optional, uncomment if using NVIDIA GPU)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    # CPU limits (optional)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "${CPU_LIMIT:-4}"
+    #     reservations:
+    #       cpus: "${CPU_RESERVATION:-1}"
+    # Override command for infinite mode
+    # command: ["python", "-u", "worker_entrypoint.py", "--infinite"]

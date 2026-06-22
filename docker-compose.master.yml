@@ -1,0 +1,99 @@
+# Docker Compose for MLflow + Optuna Master Stack
+# Deploy this on your server (24/7) to host:
+#   - PostgreSQL (Optuna storage)
+#   - MLflow Server (experiment tracking)
+#   - Optuna Dashboard (hyperparameter optimization UI)
+#   - MLflow UI (experiment comparison UI)
+#
+# Usage:
+#   docker-compose -f docker-compose.master.yml up -d
+#
+# Access:
+#   - Optuna Dashboard: http://localhost:8080
+#   - MLflow UI: http://localhost:5000
+#   - PostgreSQL: localhost:5432 (protect with VPN/Cloudflare!)
+#
+# Security Note:
+#   NEVER expose PostgreSQL directly to the internet!
+#   Use Cloudflare Zero Trust, WireGuard, or SSH tunnel.
+
+version: "3.8"
+
+services:
+  # PostgreSQL Database for Optuna Storage
+  postgres:
+    image: postgres:15-alpine
+    container_name: optuna-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-optuna}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-optuna_secret_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-optuna_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      # WARNING: Only expose via VPN/Cloudflare!
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - optuna-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-optuna} -d ${POSTGRES_DB:-optuna_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MLflow Server for Experiment Tracking
+  mlflow:
+    image: python:3.11-slim
+    container_name: mlflow-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # MLflow backend store (PostgreSQL)
+      MLFLOW_BACKEND_STORE_URI: postgresql://${POSTGRES_USER:-optuna}:${POSTGRES_PASSWORD:-optuna_secret_change_me}@postgres:5432/${POSTGRES_DB:-optuna_db}
+      # MLflow default artifact root (local volume)
+      MLFLOW_DEFAULT_ARTIFACT_ROOT: /mlflow-artifacts
+    volumes:
+      - mlflow_artifacts:/mlflow-artifacts
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+    networks:
+      - optuna-network
+    command: >
+      sh -c "pip install --no-cache-dir mlflow psycopg2-binary &&
+             mlflow server 
+             --backend-store-uri postgresql://${POSTGRES_USER:-optuna}:${POSTGRES_PASSWORD:-optuna_secret_change_me}@postgres:5432/${POSTGRES_DB:-optuna_db}
+             --default-artifact-root /mlflow-artifacts
+             --host 0.0.0.0
+             --port 5000"
+
+  # Optuna Dashboard for Hyperparameter Optimization
+  optuna-dashboard:
+    image: python:3.11-slim
+    container_name: optuna-dashboard
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      OPTUNA_DASHBOARD_STORAGE_URL: postgresql://${POSTGRES_USER:-optuna}:${POSTGRES_PASSWORD:-optuna_secret_change_me}@postgres:5432/${POSTGRES_DB:-optuna_db}
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"
+    networks:
+      - optuna-network
+    command: >
+      sh -c "pip install --no-cache-dir optuna optuna-dashboard psycopg2-binary &&
+             optuna-dashboard postgresql://${POSTGRES_USER:-optuna}:${POSTGRES_PASSWORD:-optuna_secret_change_me}@postgres:5432/${POSTGRES_DB:-optuna_db}"
+
+volumes:
+  postgres_data:
+    driver: local
+  mlflow_artifacts:
+    driver: local
+
+networks:
+  optuna-network:
+    driver: bridge
