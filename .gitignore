@@ -1,3 +1,6 @@
 .env
 __pycache__/*
 logs/*
+.continue/*
+optuna_local.db
+optuna.db
