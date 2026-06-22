@@ -98,6 +98,10 @@ echo ""
 # ============================================
 echo -e "${YELLOW}[3/4] Starting Master Stack...${NC}"
 
+# Clean up old containers to avoid conflicts
+echo -e "${YELLOW}Cleaning up old containers...${NC}"
+docker rm -f optuna-postgres optuna-dashboard mlflow-server 2>/dev/null || true
+
 echo -e "${YELLOW}Using port 5433 for PostgreSQL (to avoid conflicts)...${NC}"
 $DOCKER_COMPOSE_CMD -f docker-compose.master.yml up -d
 
