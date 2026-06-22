@@ -127,7 +127,7 @@ class TensorBoardStudyCallback:
 
 
 # === Objective Function ===
-def create_training_args(trial, num_episodes=400, use_dynamic_rewards=False):
+def create_training_args(trial, num_episodes=200, use_dynamic_rewards=False):
     """Create training arguments from Optuna trial."""
     base_args = SimpleNamespace(
         num_episodes=num_episodes,
@@ -153,6 +153,10 @@ def create_training_args(trial, num_episodes=400, use_dynamic_rewards=False):
         log_dir=f"logs/optuna/trial_{trial.number}",
         save_interval=9999,
         log_interval=10,
+        centralized_critic=True,  # Required by train_mappo_dynamic.py
+        viewer=False,  # Disable viewer for automated trials
+        viewer_interval=100,
+        eval_at_end=False,
     )
 
     if use_dynamic_rewards:

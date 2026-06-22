@@ -72,6 +72,10 @@ pip install torch --index-url https://download.pytorch.org/whl/rocm6.0
 pip install torch --index-url https://download.pytorch.org/whl/cu118
 # CPU:
 pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# ⚠️ WICHTIG: MuJoCo Renderer setzen (vermeidet Speicherfehler)
+export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=egl
 ```
 
 ---
@@ -140,6 +144,10 @@ docker-compose -f docker-compose.master.yml logs -f
 ### 2. Worker starten (lokal testen)
 
 ```bash
+# ⚠️ WICHTIG: Renderer zuerst setzen!
+export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=egl
+
 # Ohne Docker (direkt)
 python worker_entrypoint.py \
   --storage sqlite:///optuna_local.db \
@@ -315,6 +323,31 @@ optuna-dashboard postgresql://optuna:password@MASTER_IP:5432/optuna_db
 # Batch-Größe reduzieren
 OPTUNA_N_TRIALS=5
 # Oder in worker_entrypoint.py: num_episodes=200 statt 400
+```
+
+### "free(): invalid pointer" oder Speicherfehler
+
+⚠️ **Häufiges Problem mit MuJoCo 3.1.6 + GLIBC 2.43+**
+
+Lösung: Renderer korrekt setzen VOR dem Training:
+
+```bash
+# EGL Rendering (empfohlen für headless Server)
+export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=egl
+
+# Alternative: OSMesa (langsamer, aber kompatibler)
+export MUJOCO_GL=osmesa
+export PYOPENGL_PLATFORM=osmesa
+
+# Dann Training starten
+python train_mappo_dynamic.py ...
+```
+
+In `.env` Datei (permanent):
+```bash
+MUJOCO_GL=egl
+PYOPENGL_PLATFORM=egl
 ```
 
 ---
