@@ -39,12 +39,13 @@ else
 fi
 
 # Check Docker Compose (V2 preferred, V1 fallback)
-if command -v docker-compose &> /dev/null; then
-    DOCKER_COMPOSE_CMD="docker-compose"
-    echo -e "${GREEN}✓ Docker Compose found: $(docker-compose --version)${NC}"
-elif command -v docker &> /dev/null && docker compose version &> /dev/null; then
+if command -v docker &> /dev/null && docker compose version &> /dev/null; then
     DOCKER_COMPOSE_CMD="docker compose"
     echo -e "${GREEN}✓ Docker Compose (V2) found: $(docker compose version)${NC}"
+elif command -v docker-compose &> /dev/null; then
+    DOCKER_COMPOSE_CMD="docker-compose"
+    echo -e "${GREEN}✓ Docker Compose (V1) found: $(docker-compose --version)${NC}"
+    echo -e "${YELLOW}⚠️  Warning: V1 detected. Consider using V2 (docker compose) for better compatibility.${NC}"
 else
     echo -e "${RED}Error: Docker Compose not found. Please install it first.${NC}"
     echo "Visit: https://docs.docker.com/compose/install/"
