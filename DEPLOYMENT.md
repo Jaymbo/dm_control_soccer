@@ -13,8 +13,9 @@ Komplette Anleitung für das Deployment auf deinem Server mit externen Workern.
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
 │  │  MLflow      │  │  PostgreSQL  │  │  Cloudflare      │   │
-│  │  :5000       │  │  :5432       │  │  Tunnel          │   │
+│  │  :5000       │  │  :5433       │  │  Tunnel          │   │
 │  └──────────────┘  └──────────────┘  └──────────────────┘   │
+│                     (external)                               │
 │                                                              │
 │  Dashboards:                                                 │
 │  - MLflow UI: http://xxx.xxx.xxx.xxx:5000                   │
@@ -224,7 +225,7 @@ MLFLOW_TRACKING_URI=http://TAILSCALE_IP:5000
 **Auf jedem Worker:**
 ```bash
 # SSH Tunnel öffnen (im Hintergrund)
-ssh -N -L 5432:localhost:5433 -L 5000:localhost:5000 user@server-ip &
+ssh -N -L 5433:localhost:5433 -L 5000:localhost:5000 user@server-ip &
 
 # Worker Connection:
 OPTUNA_STORAGE=postgresql://optuna:PASSWORT@localhost:5433/optuna_db

@@ -91,7 +91,7 @@ export PYOPENGL_PLATFORM=egl
 POSTGRES_USER=optuna
 POSTGRES_PASSWORD=CHANGE_ME_TO_SECURE_PASSWORD
 POSTGRES_DB=optuna_db
-POSTGRES_PORT=5432
+POSTGRES_PORT=5433
 
 # MLflow
 MLFLOW_PORT=5000
@@ -268,7 +268,7 @@ postgresql://optuna:password@optuna.your-domain.com:443/optuna_db
 **Option B: SSH-Tunnel (einfach)**
 ```bash
 # Auf Worker
-ssh -L 5432:localhost:5433 user@master-server
+ssh -L 5433:localhost:5433 user@master-server
 ```
 
 Connection-String:
@@ -288,7 +288,7 @@ postgresql://optuna:password@localhost:5433/optuna_db
 
 ```bash
 # Netzwerk prüfen
-telnet MASTER_IP 5432
+telnet MASTER_IP 5433
 telnet MASTER_IP 5000
 
 # Firewall prüfen (auf Master)

@@ -221,7 +221,7 @@ nc -zv optuna.jasondietrich.de 443
 docker-compose -f docker-compose.master.yml ps
 
 # 3. SSH-Tunnel manuell testen
-ssh -L 5433:localhost:5433:localhost:5432 user@master-server
+ssh -L 5433:localhost:5433 user@master-server
 ```
 
 ### Worker bleibt im Offline-Mode

@@ -81,7 +81,7 @@ Create `.env` file on the server:
 POSTGRES_USER=optuna
 POSTGRES_PASSWORD=CHANGE_ME_TO_SECURE_PASSWORD
 POSTGRES_DB=optuna_db
-POSTGRES_PORT=5432
+POSTGRES_PORT=5433
 DASHBOARD_PORT=8080
 ```
 
@@ -125,7 +125,7 @@ Access Dashboard: `http://your-server-ip:8080`
    tunnel: my-tunnel
    ingress:
      - hostname: optuna.your-domain.com
-       service: tcp://localhost:5432
+       service: tcp://localhost:5433
      - service: http_status:404
    ```
 
@@ -139,7 +139,7 @@ Access Dashboard: `http://your-server-ip:8080`
 
 Workers connect via SSH tunnel:
 ```bash
-ssh -L 5433:localhost:5433:localhost:5432 user@your-server
+ssh -L 5433:localhost:5433 user@your-server
 ```
 
 Connection string for workers:

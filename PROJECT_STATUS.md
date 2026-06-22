@@ -173,7 +173,7 @@ export PYOPENGL_PLATFORM=egl
 **Lösung:** 
 - Cloudflare Zero Trust oder SSH-Tunnel verwenden
 - Connection-String prüfen
-- Telnet-Test: `telnet MASTER_IP 5432`
+- Telnet-Test: `telnet MASTER_IP 5433`
 
 ### 3. MLflow loggt nicht
 **Ursache:** Server nicht erreichbar  
