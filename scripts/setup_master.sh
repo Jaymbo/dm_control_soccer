@@ -38,13 +38,17 @@ else
     echo -e "${GREEN}✓ Docker found: $(docker --version)${NC}"
 fi
 
-# Check Docker Compose
-if ! command -v docker-compose &> /dev/null; then
+# Check Docker Compose (V2 preferred, V1 fallback)
+if command -v docker-compose &> /dev/null; then
+    DOCKER_COMPOSE_CMD="docker-compose"
+    echo -e "${GREEN}✓ Docker Compose found: $(docker-compose --version)${NC}"
+elif command -v docker &> /dev/null && docker compose version &> /dev/null; then
+    DOCKER_COMPOSE_CMD="docker compose"
+    echo -e "${GREEN}✓ Docker Compose (V2) found: $(docker compose version)${NC}"
+else
     echo -e "${RED}Error: Docker Compose not found. Please install it first.${NC}"
     echo "Visit: https://docs.docker.com/compose/install/"
     exit 1
-else
-    echo -e "${GREEN}✓ Docker Compose found: $(docker-compose --version)${NC}"
 fi
 
 # Check git
@@ -94,14 +98,14 @@ echo ""
 echo -e "${YELLOW}[3/4] Starting Master Stack...${NC}"
 
 echo -e "${YELLOW}Using port 5433 for PostgreSQL (to avoid conflicts)...${NC}"
-docker-compose -f docker-compose.master.yml up -d
+$DOCKER_COMPOSE_CMD -f docker-compose.master.yml up -d
 
 # Wait for services to be healthy
 echo -e "${YELLOW}Waiting for services to start (this may take 30-60 seconds)...${NC}"
 sleep 15
 
 # Check status
-docker-compose -f docker-compose.master.yml ps
+$DOCKER_COMPOSE_CMD -f docker-compose.master.yml ps
 
 echo -e "${GREEN}✓ Master Stack started${NC}"
 echo ""
@@ -112,7 +116,7 @@ echo ""
 echo -e "${YELLOW}[4/4] Verifying services...${NC}"
 
 # Check PostgreSQL
-if docker-compose -f docker-compose.master.yml exec -T postgres pg_isready -U optuna -d optuna_db &> /dev/null; then
+if $DOCKER_COMPOSE_CMD -f docker-compose.master.yml exec -T postgres pg_isready -U optuna -d optuna_db &> /dev/null; then
     echo -e "${GREEN}✓ PostgreSQL is ready${NC}"
 else
     echo -e "${YELLOW}PostgreSQL is starting... (wait a moment)${NC}"
