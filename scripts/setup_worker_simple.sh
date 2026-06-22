@@ -106,7 +106,7 @@ echo -e "${GREEN}✓ Python found: $(python3 --version)${NC}"
 # Install system dependencies (quietly)
 echo -e "${YELLOW}Installing system packages...${NC}"
 if command -v apt-get &> /dev/null; then
-    sudo apt-get update -qq
+    # Skip update to avoid repo errors, just install what we need
     sudo apt-get install -y -qq --no-install-recommends \
         build-essential \
         libgl1-mesa-dev \
@@ -115,7 +115,9 @@ if command -v apt-get &> /dev/null; then
         libosmesa6-dev \
         libglfw3 \
         libglib2.0-0 \
-        libgomp1 2>/dev/null || true
+        libgomp1 2>/dev/null || {
+            echo -e "${YELLOW}⚠️  Some packages could not be installed (continuing anyway)...${NC}"
+        }
     echo -e "${GREEN}✓ System packages installed${NC}"
 else
     echo -e "${YELLOW}apt-get not found, skipping system packages${NC}"
