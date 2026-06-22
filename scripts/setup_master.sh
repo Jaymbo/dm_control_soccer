@@ -93,7 +93,24 @@ echo ""
 # ============================================
 echo -e "${YELLOW}[3/4] Starting Master Stack...${NC}"
 
-docker-compose -f docker-compose.master.yml up -d
+# Check if port 5432 is already in use
+if ss -tlnp 2>/dev/null | grep -q ":5432 " || netstat -tlnp 2>/dev/null | grep -q ":5432 "; then
+    echo -e "${YELLOW}Warning: Port 5432 is already in use${NC}"
+    echo -e "${YELLOW}Using alternative port 5433 for this PostgreSQL instance...${NC}"
+    
+    # Create temporary docker-compose override
+    cat > docker-compose.master.override.yml << EOF
+version: "3.8"
+services:
+  postgres:
+    ports:
+      - "5433:5432"
+EOF
+    
+    docker-compose -f docker-compose.master.yml -f docker-compose.master.override.yml up -d
+else
+    docker-compose -f docker-compose.master.yml up -d
+fi
 
 # Wait for services to be healthy
 echo -e "${YELLOW}Waiting for services to start (this may take 30-60 seconds)...${NC}"
