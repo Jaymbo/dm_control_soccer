@@ -1,213 +1,64 @@
-# ⚽ Multi-Agent Soccer - Deep Reinforcement Learning
+# ⚽ Multi-Agent Soccer RL - Sauberer Start
 
-**Production-Ready Distributed Training mit MLflow + Optuna**
+Dies ist die aufgeräumte Version des Projekts. Alle älteren Iterationen sind sicher im Ordner [`archive/`](archive/) archiviert.
 
-[![Status](https://img.shields.io/badge/status-production--ready-green)](https://github.com/Jaymbo/dm_control_soccer)
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-
----
-
-## 🚀 Quickstart
-
-### Master Server einrichten (5 Min)
+## 🚀 Schnellstart
 
 ```bash
-ssh dein-server.com
-git clone git@github.com:Jaymbo/dm_control_soccer.git
-cd dm_control_soccer
-./scripts/setup_master.sh
+# Environment-Check
+python -m src.tests.test_env --help
+
+# Training starten (CPU-freundlich, kleiner Testlauf)
+python -m src.training.train --num-updates 50 --num-envs 4 --log-dir logs/test_run
+
+# TensorBoard starten
+tensorboard --logdir logs/test_run
 ```
 
-### Worker einrichten (3 Min pro Gerät)
-
-```bash
-git clone git@github.com:Jaymbo/dm_control_soccer.git
-cd dm_control_soccer
-./scripts/setup_worker.sh
-```
-
-**→ Das ist alles!** Worker verbinden sich automatisch und starten Training.
-
----
-
-## 📖 Dokumentation
-
-| Dokument | Zweck |
-|----------|-------|
-| **[SETUP_ANLEITUNG.md](SETUP_ANLEITUNG.md)** | ⭐ **Start here!** Schritt-für-Schritt Guide |
-| **[DEPLOYMENT.md](DEPLOYMENT.md)** | Komplette Deploy-Anleitung mit Cloudflare/Tailscale |
-| **[QUICKSTART.md](QUICKSTART.md)** | Schnelleinstieg für Training & HPO |
-| **[PROJECT_STATUS.md](PROJECT_STATUS.md)** | Aktueller Projekt-Status & Architektur |
-| **[README_MLFLOW_MAPO.md](README_MLFLOW_MAPO.md)** | MLflow + Optuna Details |
-
----
-
-## 🏗️ Architektur
+## 📁 Struktur
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                  MASTER SERVER (24/7)                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
-│  │  MLflow      │  │  PostgreSQL  │  │  Cloudflare      │   │
-│  │  :5000       │  │  :5433       │  │  Tunnel          │   │
-│  └──────────────┘  └──────────────┘  └──────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                          │
-                          │ Secure Tunnel
-                          │
-    ┌─────────────────────┼─────────────────────┐
-    │                     │                     │
-    ▼                     ▼                     ▼
-┌─────────┐         ┌─────────┐           ┌─────────┐
-│ Worker 1│         │ Worker 2│           │ Worker N│
-│ Laptop  │         │ Desktop │           │ Server  │
-│ (CPU)   │         │ (GPU)   │           │ Mixed   │
-└─────────┘         └─────────┘           └─────────┘
+.
+├── archive/              # ALTE VERSIONEN - nichts wurde gelöscht
+│   ├── legacy/           # Erste Iterationen (PPO, MAPPO v1, Optimized, Curriculum)
+│   ├── dynamic_scoring/  # Dynamic Scoring + Dynamic Scoring V2
+│   ├── distributed/      # MLflow, Optuna, Docker, Worker
+│   └── experiments/      # A3C, Debug-Tools, Viewer
+├── src/                  # NEUER SAUBERER START
+│   ├── env/              # Environment Wrapper
+│   ├── agents/           # MAPPO Agent
+│   ├── training/         # Training Scripts
+│   └── tests/            # Tests & Visualisierung
+├── configs/              # Zukünftige YAML/JSON-Configs
+├── docs/                 # Gesammelte Dokumentation
+├── logs/                 # Trainings-Logs
+├── mlruns/               # MLflow-Tracking
+└── requirements.txt      # Abhängigkeiten
 ```
 
----
+## 📦 Module
 
-## ✨ Features
+| Datei | Zweck |
+|-------|-------|
+| `src/env/soccer_env.py` | `SimpleBallChaseWrapper` für 2v2 Soccer |
+| `src/agents/mappo_agent.py` | MAPPO-Agent mit Parameter Sharing |
+| `src/training/train.py` | Haupt-Trainingsskript |
+| `src/tests/test_env.py` | Agent laden & visualisieren |
 
-### Training
-- ✅ **Dynamic Scoring** - Zustandsbasierte Reward-Branches
-- ✅ **Curriculum Learning** - Phasenweises Training
-- ✅ **MAPPO** - Multi-Agent PPO mit zentralisiertem Critic
-- ✅ **Mixed Precision** - AMP für GPU-Training
+## 📚 Wichtige alte Dokumente
 
-### Distributed
-- ✅ **MLflow** - Experiment Tracking & Model Registry
-- ✅ **Optuna** - Hyperparameter-Optimierung mit Pruning
-- ✅ **Cloudflare Zero Trust** - Secure Access ohne VPN
-- ✅ **Tailscale** - Alternative Mesh-VPN
-- ✅ **Auto-Scaling** - Worker kommen/gehen beliebig
+- `docs/PROJECT_HISTORY_README.md` — Ursprüngliches Haupt-README
+- `docs/PROJECT_STATUS.md` — Letzter Projekt-Status
+- `docs/SETUP_ANLEITUNG.md` — Distributed Setup
+- `archive/ARCHIVE_INDEX.md` — Übersicht aller archivierten Dateien
 
-### Monitoring
-- ✅ **TensorBoard** - Lokale Metrics
-- ✅ **MLflow UI** - Experiment-Vergleich
-- ✅ **Optuna Dashboard** - HPO-Status
+## ⚠️ Hinweis
 
----
+Die alten Skripte im `archive/`-Ordner funktionieren weiterhin, verweisen aber eventuell auf Dateien, die nun verschoben sind. Wenn Sie eine alte Version neu starten wollen, kopieren Sie den entsprechenden Ordner am besten zurück ins Hauptverzeichnis oder passen die Imports an.
 
-## 🎯 Use Cases
+## 🛠️ Nächste Schritte
 
-### 1. Lokales Testing
-```bash
-python train_mappo_dynamic.py --num-episodes 100 --viewer
-```
-
-### 2. Hyperparameter-Optimierung (Lokal)
-```bash
-python optimize_curriculum.py --n-trials 50
-```
-
-### 3. Distributed Production
-```bash
-# Master
-./scripts/setup_master.sh
-
-# Worker (beliebig viele)
-./scripts/setup_worker.sh
-```
-
----
-
-## 📊 Performance
-
-| Hardware | Steps/sec | Episoden/Min |
-|----------|-----------|--------------|
-| CPU (8 Core) | ~1500-2000 | ~30-40 |
-| GPU (NVIDIA) | ~3000-5000 | ~60-80 |
-| Distributed (4 Worker) | ~8000+ | ~150+ |
-
----
-
-## 🔒 Security
-
-- ✅ **Cloudflare Zero Trust** - PostgreSQL nie öffentlich exponieren
-- ✅ **Automatische HTTPS** - Verschlüsselte Kommunikation
-- ✅ **Starke Passwörter** - Auto-generiert beim Setup
-- ✅ **Access Control** - Optional mit Cloudflare Policies
-
----
-
-## 🛠️ Tech Stack
-
-| Komponente | Technologie |
-|------------|-------------|
-| Environment | DM Control Suite (MuJoCo) |
-| RL Algorithm | MAPPO (Multi-Agent PPO) |
-| Deep Learning | PyTorch |
-| Experiment Tracking | MLflow |
-| Hyperparameter Opt. | Optuna |
-| Database | PostgreSQL |
-| Security | Cloudflare Zero Trust / Tailscale |
-| Deployment | Docker Compose |
-
----
-
-## 📁 Repository Struktur
-
-```
-dm_control_soccer/
-├── scripts/
-│   ├── setup_master.sh        # ⭐ Master Setup
-│   ├── setup_worker.sh        # ⭐ Worker Setup
-│   └── README.md              # Script-Doku
-├── train_mappo_dynamic.py     # Dynamic Scoring Training
-├── worker_entrypoint.py       # Distributed Worker
-├── docker-compose.master.yml  # Master Stack
-├── docker-compose.worker.yml  # Worker Container
-├── SETUP_ANLEITUNG.md         # ⭐ Schritt-für-Schritt
-├── DEPLOYMENT.md              # Complete Deploy Guide
-├── QUICKSTART.md              # Quick Reference
-└── README.md                  # This file
-```
-
----
-
-## 🎓 Nächste Schritte
-
-1. **[SETUP_ANLEITUNG.md](SETUP_ANLEITUNG.md)** lesen
-2. Master auf Server einrichten
-3. Ersten Worker starten
-4. Training in MLflow/Optuna beobachten
-5. Mehr Worker hinzufügen für Speed
-
----
-
-## 📚 Weitere Ressourcen
-
-- [Dynamic Scoring Guide](README_DYNAMIC_SCORING.md)
-- [Curriculum Learning](CURRICULUM_LEARNING.md)
-- [Architecture Comparison](MAPPO_VS_PPO.md)
-- [Optimizations](OPTIMIZATIONS_SUMMARY.md)
-
----
-
-## 🤝 Contributing
-
-Issues und PRs sind willkommen!
-
----
-
-## 📄 License
-
-MIT License - siehe [LICENSE](LICENSE)
-
----
-
-## 🙏 Acknowledgments
-
-- DM Control Suite (DeepMind)
-- MuJoCo (Tencent)
-- PyTorch
-- MLflow
-- Optuna
-
----
-
-**Viel Erfolg beim Training! ⚽🤖**
-
-[![Deployment](https://img.shields.io/badge/deployment-one--click-green)](SETUP_ANLEITUNG.md)
-[![Documentation](https://img.shields.io/badge/docs-complete-blue)](SETUP_ANLEITUNG.md)
+1. `python -m src.tests.test_env` → prüfen, ob alles lädt
+2. Kleinen Testlauf starten
+3. Ergebnisse in TensorBoard prüfen
+4. Dann schrittweise erweitern

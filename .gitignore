@@ -1,6 +1,36 @@
+# Secrets / Env
 .env
-__pycache__/*
+.env.*
+!.env.example
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Logs & Outputs
 logs/*
-.continue/*
-optuna*.db
+runs/*
+*.log
+
+# MLflow
 mlruns/*
+
+# Optuna Databases
+optuna*.db
+
+# Continue.dev
+.continue/*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

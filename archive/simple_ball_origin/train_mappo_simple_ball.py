@@ -360,21 +360,20 @@ def update_policy(agent, optimizer, rollout_data, args, update_step, writer, sca
     # Advantage Normalisierung - ROBUST mit Minimum-Std
     adv_mean = advantages_t.mean()
     adv_std = advantages_t.std()
-    # Vermeide Division durch ~0 bei konstanten Rewards
     if adv_std < 1e-3:
-        advantages_t = advantages_t - adv_mean  # Nur zentrieren, nicht skalieren
+        advantages_t = advantages_t - adv_mean
     else:
         advantages_t = (advantages_t - adv_mean) / (adv_std + 1e-8)
-    advantages_t = torch.clamp(advantages_t, -5.0, 5.0)  # Strikteres Clamping
+    advantages_t = torch.clamp(advantages_t, -3.0, 3.0)
 
-    # Returns: KEINE laufende Normalisierung (instabil!), nur pro Batch zentrieren
+    # Returns: pro Batch zentrieren (keine laufende Norm, die instabil ist)
     returns_mean = returns_t.mean()
     returns_std = returns_t.std()
     if returns_std < 1e-3:
-        returns_norm_t = returns_t - returns_mean  # Nur zentrieren
+        returns_norm_t = returns_t - returns_mean
     else:
         returns_norm_t = (returns_t - returns_mean) / (returns_std + 1e-8)
-    returns_norm_t = torch.clamp(returns_norm_t, -5.0, 5.0)
+    returns_norm_t = torch.clamp(returns_norm_t, -3.0, 3.0)
 
     # Lernraten-Decay
     progress = min(1.0, update_step / args.num_updates)
@@ -419,9 +418,6 @@ def update_policy(agent, optimizer, rollout_data, args, update_step, writer, sca
                     entropy_mean = entropy.mean(dim=1)
 
                     ratio = torch.exp(log_probs_sum - old_log_probs_sum)
-                    
-                    # Ratio clamping für Stabilität
-                    ratio = torch.clamp(ratio, -10.0, 10.0)
                     surr1 = ratio * mb_advantages
                     surr2 = torch.clamp(ratio, 1 - args.clip_epsilon, 1 + args.clip_epsilon) * mb_advantages
                     policy_loss = -torch.min(surr1, surr2).mean()
@@ -469,9 +465,6 @@ def update_policy(agent, optimizer, rollout_data, args, update_step, writer, sca
                 entropy_mean = entropy.mean(dim=1)
 
                 ratio = torch.exp(log_probs_sum - old_log_probs_sum)
-                
-                # Ratio clamping für Stabilität
-                ratio = torch.clamp(ratio, -10.0, 10.0)
                 surr1 = ratio * mb_advantages
                 surr2 = torch.clamp(ratio, 1 - args.clip_epsilon, 1 + args.clip_epsilon) * mb_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
@@ -518,6 +511,16 @@ def update_policy(agent, optimizer, rollout_data, args, update_step, writer, sca
     writer.add_scalar("Loss/approx_kl", np.mean(approx_kls), update_step)
     writer.add_scalar("Train/lr", current_lr, update_step)
     writer.add_scalar("Train/entropy_coef", current_entropy, update_step)
+
+    # Reward/Return Statistik für Diagnose
+    writer.add_scalar("Stats/returns_mean", returns_t.mean().item(), update_step)
+    writer.add_scalar("Stats/returns_std", returns_t.std().item(), update_step)
+    writer.add_scalar("Stats/returns_min", returns_t.min().item(), update_step)
+    writer.add_scalar("Stats/returns_max", returns_t.max().item(), update_step)
+    writer.add_scalar("Stats/adv_mean", adv_mean.item(), update_step)
+    writer.add_scalar("Stats/adv_std", adv_std.item(), update_step)
+    writer.add_scalar("Stats/rewards_mean", rewards.mean().item(), update_step)
+    writer.add_scalar("Stats/rewards_max", rewards.max().item(), update_step)
 
     if _MLFLOW_AVAILABLE and mlflow.active_run():
         mlflow.log_metrics({
@@ -590,14 +593,15 @@ def train(args):
     best_avg_reward = float('-inf')
     checkpoint_path = None
 
-    print(f"\nStarting SIMPLE BALL-CHASE V9 MAPPO training (SYMMETRISCH!)")
+    print(f"\nStarting SIMPLE BALL-CHASE V10 MAPPO training (SYMMETRISCH + KONTROLLE)")
     print(f"Team size: {args.team_size}v{args.team_size} ({num_agents} agents)")
     print(f"Parallel envs: {args.num_envs}, Rollout steps: {args.rollout_steps}")
     print(f"Updates: {args.num_updates}, PPO epochs: {args.ppo_epochs}")
     print(f"LR: {args.lr}, Entropy: {args.entropy_coef}, Max Grad Norm: {args.max_grad_norm}")
-    print(f"Possession Bonus: SYMMETRISCH (je näher = mehr, max +{args.possession_weight * 5:.3f})")
-    print(f"Delta Reward: +1.0 pro Meter Annäherung (STARK!)")
-    print(f"Chaser Bonus: +0.5 pro Step (wenn Team im Besitz)")
+    print(f"Possession Bonus: SYMMETRISCH (max +{args.possession_weight * 2:.3f}, nur < 4m)")
+    print(f"Delta Reward: +2.0 pro Meter Annäherung")
+    print(f"Chaser Bonus: +0.15 pro Step (nur eigener Chaser, < 4m)")
+    print(f"Ball Control Bonus: +0.25 pro Step (wenn < 1m)")
     print(f"Proximity Weight: {args.proximity_weight} (sehr klein)")
     print(f"Time Penalty: -{args.time_penalty} pro Step")
     print("-" * 60)

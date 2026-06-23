@@ -1,15 +1,10 @@
 """
-Simple Ball-Chase Reward Wrapper V6.
+Simple Ball-Chase Reward Wrapper V9.
 
-Kontinuierlicher Reward für Soccer-Verhalten:
-1. Ball-Nähe: Je näher = mehr Punkte (kontinuierlich)
-2. Gegner-Distanz: Je weiter Gegner weg = mehr Punkte
-3. Besitz-Differenz: (Gegner_Distanz - Eigene_Distanz) als Haupt-Signal
-4. Time-Penalty verhindert Stillstand
-
-Erwartetes Verhalten:
-- Ballbesitzer lernt mit Ball vor Gegnern wegzulaufen
-- Nicht-Ballbesitzer versuchen Gegner abzuhalten (Marking)
+Vollständig symmetrischer, positiver Reward für 2v2 Soccer.
+Jedes Team wird aus EGO-PERSPEKTIVE belohnt – es gibt keinen
+„Gewinner“-Bias im Shaped Reward. Ziel: beide Teams lernen
+gleichermaßen Ball-Anlaufen, Annäherung und Besitz.
 """
 import numpy as np
 from dm_control.locomotion import soccer as dm_soccer
@@ -17,7 +12,9 @@ from dm_control.locomotion import soccer as dm_soccer
 
 class SimpleBallChaseWrapper:
     """
-    Reward mit Fokus auf Ball-Nähe und Team-Besitz.
+    Ego-zentrischer, symmetrischer Reward für Soccer.
+    Kein Team-bias: beide Teams erhalten identische Reward-Komponenten
+    basierend auf ihrer eigenen Leistung.
     """
 
     BRANCH_NAMES = ["ball_chase"]
@@ -26,8 +23,8 @@ class SimpleBallChaseWrapper:
         self,
         env,
         reward_scale=1.0,
-        possession_weight=0.02,       # Bonus wenn Team näher ist (wird mit 5 skaliert → 0.1)
-        proximity_weight=0.01,        # Sehr kleiner Bonus für Ball-Nähe
+        possession_weight=0.02,       # NICHT MEHR GENUTZT (nur für API-Kompatibilität)
+        proximity_weight=0.1,         # Reward für Ball-Nähe (max 0.1 pro Step)
         time_penalty=0.0001,          # Sehr kleine Strafe pro Step
     ):
         self.env = env
@@ -103,71 +100,25 @@ class SimpleBallChaseWrapper:
 
     def _compute_reward(self, obs):
         """
-        Berechnet Reward für alle Spieler - SYMMETRISCH für beide Teams!
-        
-        Components:
-        1. Possession Bonus: JEDER bekommt Reward basierend auf eigener Distanz
-        2. Delta Reward: Annäherung an den Ball (für Ball-Chaser)
-        3. Proximity Bonus: Je näher am Ball = mehr Punkte
-        4. Time Penalty: Sehr kleine Strafe pro Step
-        
-        Wichtig: Jedes Team wird aus eigener Perspektive belohnt (ego-zentrisch)!
+        Ultra-simpler Reward: jeder Agent wird NUR nach eigener Ballnähe belohnt.
+
+        reward_p = proximity_weight * max(0, 1 - dist_p / max_dist) - time_penalty
+
+        - Kein Team-Bonus, kein Gegner, kein Chaser, kein Delta, kein Besitz.
+        - Vollständig symmetrisch: alle 4 Agents werden identisch behandelt.
+        - Sofort erkennbar, ob die Policy lernt, zum Ball zu laufen.
         """
         if self._num_players is None:
             self._team_size, self._num_players = self._detect_team_size(obs)
 
         rewards = np.zeros(self._num_players, dtype=np.float32)
+        max_dist = 5.0  # ab 5m Distanz gibt es keinen Proximity-Bonus mehr
 
-        # Finde Team-Distanzen (nächster Spieler pro Team)
-        team_dists = {}
-        for team in (0, 1):
-            chaser = self._find_ball_chaser(obs, team)
-            team_dists[team] = self._distance_to_ball(obs, chaser)
-
-        # Bestimme welches Team näher ist (für Chaser-Bonus)
-        owning_team = 0 if team_dists[0] < team_dists[1] else 1
-
-        for team in (0, 1):
-            opp_team = 1 - team
-            opp_chaser_dist = team_dists[opp_team]
-            my_team_chaser_dist = team_dists[team]
-            
-            for p in range(team * self._team_size, (team + 1) * self._team_size):
-                my_dist = self._distance_to_ball(obs, p)
-                reward = 0.0
-                
-                # 1. POSSESSION BONUS: SYMMETRISCH!
-                # Jeder bekommt Reward basierend auf WIE NAH sein Team ist
-                # Nicht "nur der Gewinner bekommt", sondern "je näher desto besser"
-                # Formel: max(0, (5.0 - my_dist) / 5.0) * weight
-                # Bei Distanz 0: 1.0 * 0.1 = +0.1
-                # Bei Distanz 2.5: 0.5 * 0.1 = +0.05
-                # Bei Distanz 5+: 0.0
-                possession_score = max(0.0, (5.0 - my_team_chaser_dist) / 5.0)
-                reward += possession_score * self.possession_weight * 5.0
-                
-                # 2. DELTA REWARD (nur für Ball-Chaser)
-                # Belohnt Annäherung an den Ball - STARK für schnelles Lernen!
-                if self._prev_dist_to_ball is not None and p in self._prev_dist_to_ball:
-                    prev_dist = self._prev_dist_to_ball[p]
-                    delta = prev_dist - my_dist  # Positiv wenn näher
-                    
-                    # STARKER Delta-Reward für Ball-Chaser
-                    if delta > 0:
-                        reward += delta * 1.0  # 1.0 pro Meter Annäherung
-                    
-                    # ZUSÄTZLICH: Ball-Chaser bekommt Extra wenn Team im Besitz ist
-                    if team == owning_team and p == my_team_chaser:
-                        reward += 0.5  # Extra-Bonus für aktiven Ball-Chaser im Besitz
-                
-                # 3. PROXIMITY BONUS (klein, nur als Zusatz-Anreiz)
-                proximity_bonus = 1.0 / (my_dist + 1.0)
-                reward += self.proximity_weight * 0.1 * proximity_bonus
-                
-                # 4. TIME PENALTY (sehr klein, nur gegen Stillstand)
-                reward -= self.time_penalty
-                
-                rewards[p] = reward
+        for p in range(self._num_players):
+            dist = self._distance_to_ball(obs, p)
+            proximity = max(0.0, 1.0 - dist / max_dist)
+            reward = self.proximity_weight * proximity - self.time_penalty
+            rewards[p] = reward
 
         return rewards
 
@@ -229,16 +180,17 @@ def make_env_with_simple_ball_chase(
     time_limit=10.0,
 ):
     """
-    Erstellt Soccer-Environment mit Simple Ball-Chase Reward V8.
-    
-    Positive Rewards für Soccer-Verhalten:
-    - Possession Bonus: Nur das nähere Team bekommt +0.1 pro Step
-    - Delta Reward: +0.1 pro Meter Annäherung (für Ball-Chaser)
-    - Proximity Bonus: Sehr klein (+0.001) als Zusatz-Anreiz
-    
+    Erstellt Soccer-Environment mit Simple Ball-Chase Reward V9.
+
+    Positive, symmetrische Rewards für Soccer-Verhalten:
+    - Team-Nähe-Bonus: jeder bekommt Reward für eigenen Chaser-Abstand
+    - Delta Reward: +1.0 pro Meter Annäherung
+    - Chaser Bonus: team-interner Chaser bekommt +0.5 pro Step
+    - Proximity Bonus: sehr klein
+
     Erwartetes Verhalten:
-    - Alle Spieler laufen zum Ball (für Delta-Reward)
-    - Team das näher ist bekommt Extra-Bonus
+    - Beide Teams laufen gleichermaßen zum Ball
+    - Kein Team-Bias durch globale Besitz-Definition
     - Kein negativer Reward (nur positive Anreize!)
     
     Parameter:
