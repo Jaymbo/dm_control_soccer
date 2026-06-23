@@ -24,7 +24,7 @@ class MAPPOActor(nn.Module):
     """
 
     def __init__(self, obs_dim_per_agent=119, action_dim_per_agent=3,
-                 hidden_dim=256, num_layers=2, use_layer_norm=False):
+                 hidden_dim=256, num_layers=5, use_layer_norm=False):
         super().__init__()
         self.obs_dim = obs_dim_per_agent
         self.action_dim = action_dim_per_agent
@@ -81,8 +81,12 @@ class MAPPOActor(nn.Module):
         """
         mean, std = self.forward(obs)
         dist = Normal(mean, std)
-        # Inverses tanh (numerisch stabil)
-        raw = 0.5 * (torch.log1p(actions) - torch.log1p(-actions))
+        
+        # Inverses tanh mit Clipping für numerische Stabilität
+        # Verhindert NaN wenn actions knapp außerhalb [-1, 1] durch Floating-Point-Fehler
+        actions_clipped = torch.clamp(actions, -0.9999, 0.9999)
+        raw = 0.5 * (torch.log1p(actions_clipped) - torch.log1p(-actions_clipped))
+        
         log_prob = dist.log_prob(raw).sum(dim=-1, keepdim=True)
         log_prob -= (2 * (math.log(2) - raw - F.softplus(-2 * raw))).sum(dim=-1, keepdim=True)
         entropy = dist.entropy().sum(dim=-1, keepdim=True)

@@ -54,7 +54,7 @@ except Exception:
 
 
 # === Configuration ===
-DEFAULT_STUDY_NAME = os.environ.get("OPTUNA_STUDY_NAME", "soccer_dynamic_v1")
+DEFAULT_STUDY_NAME = os.environ.get("OPTUNA_STUDY_NAME", "soccer_dynamic_v2")
 DEFAULT_STORAGE = os.environ.get("OPTUNA_STORAGE", "sqlite:///optuna.db")
 DEFAULT_LOG_DIR = Path(os.environ.get("OPTUNA_LOG_DIR", "logs/optuna"))
 DEFAULT_TRIALS = int(os.environ.get("OPTUNA_N_TRIALS", "10"))
@@ -281,13 +281,17 @@ def create_training_args(trial, num_episodes=200, use_dynamic_rewards=False):
     )
 
     if use_dynamic_rewards:
-        # Dynamic Scoring Parameter
+        # Dynamic Scoring V2 Parameter
         base_args.possession_radius = trial.suggest_float("possession_radius", 0.4, 1.0, step=0.2)
-        base_args.goal_threshold = trial.suggest_float("goal_threshold", 4.0, 8.0, step=2.0)
-        base_args.lambda_recover = trial.suggest_float("lambda_recover", 0.5, 2.0, step=0.5)
-        base_args.lambda_pursuit = trial.suggest_float("lambda_pursuit", 0.5, 2.0, step=0.5)
-        base_args.lambda_possession = trial.suggest_float("lambda_possession", 0.5, 2.0, step=0.5)
-        base_args.lambda_defense = trial.suggest_float("lambda_defense", 0.5, 2.0, step=0.5)
+        base_args.shot_speed_threshold = 2.0
+        base_args.goal_width = 2.0
+        base_args.lambda_recovery = trial.suggest_float("lambda_recovery", 0.5, 2.0, step=0.5)
+        base_args.lambda_marking = trial.suggest_float("lambda_marking", 0.5, 2.0, step=0.5)
+        base_args.lambda_possession = trial.suggest_float("lambda_possession", 0.5, 3.0, step=0.5)
+        base_args.lambda_shooting = trial.suggest_float("lambda_shooting", 0.5, 2.0, step=0.5)
+        base_args.lambda_blocking = trial.suggest_float("lambda_blocking", 0.5, 2.0, step=0.5)
+        base_args.lambda_goalkeeping = trial.suggest_float("lambda_goalkeeping", 0.1, 1.0, step=0.2)
+        base_args.lambda_attack_pos = trial.suggest_float("lambda_attack_pos", 0.1, 1.0, step=0.2)
     else:
         # Legacy Curriculum Parameter
         base_args.start_phase = 0
@@ -319,7 +323,7 @@ def objective(trial, logger, use_dynamic_rewards=False, mlflow_tracking_uri=None
                 try:
                     # Import training function lazily to avoid circular imports
                     if use_dynamic_rewards:
-                        from train_mappo_dynamic import train
+                        from train_mappo_dynamic_v2 import train
                     else:
                         from train_mappo_curriculum import train
 
@@ -360,7 +364,7 @@ def objective(trial, logger, use_dynamic_rewards=False, mlflow_tracking_uri=None
     # No MLflow or offline mode - simple training
     try:
         if use_dynamic_rewards:
-            from train_mappo_dynamic import train
+            from train_mappo_dynamic_v2 import train
         else:
             from train_mappo_curriculum import train
 
