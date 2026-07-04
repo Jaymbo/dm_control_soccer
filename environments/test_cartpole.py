@@ -9,6 +9,7 @@ from dm_control import viewer
 
 # CartPole "swingup" oder "balance" laden
 env = suite.load(domain_name="cartpole_ball", task_name="swingup")
+env = suite.load(domain_name="one_joint_ball", task_name="swingup")
 
 # Einfacher Random-Agent
 class RandomAgent:

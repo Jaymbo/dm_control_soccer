@@ -1,0 +1,37 @@
+<mujoco model="cart-pole">
+  <include file="./common/skybox.xml"/>
+  <include file="./common/visual.xml"/>
+  <include file="./common/materials.xml"/>
+
+  <option timestep="0.01" integrator="RK4">
+    <flag contact="enable" energy="enable"/>
+  </option>
+
+  <default>
+    <default class="pole">
+      <joint type="hinge" axis="0 1 0"  damping="2e-6"/>
+      <geom type="capsule" fromto="0 0 0 0 0 1" size="0.045" material="self" mass="5"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light name="light" pos="0 0 6"/>
+    <camera name="fixed" pos="0 -4 1" zaxis="0 -1 0"/>
+    <camera name="lookatcart" mode="targetbody" target="pole_1" pos="0 -2 2"/>
+    <geom name="floor" pos="0 0 -.05" size="100 100 .2" type="plane" material="grid"/>
+    <body name="pole_1" pos="0 0 1" childclass="pole">
+      <joint name="knees"/>
+      <geom name="pole_1"/>
+    </body>
+
+    <!-- Ball -->
+    <body name="ball" pos="1 0 0.15">
+      <freejoint name="ball_joint"/>
+      <geom name="ball" type="sphere" size="0.2" rgba="0.8 0.2 0.2 1" mass="0.43"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="knee" joint="knees" gear="10" ctrllimited="true" ctrlrange="-1 1" />
+  </actuator>
+</mujoco>

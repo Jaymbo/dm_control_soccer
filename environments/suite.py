@@ -25,6 +25,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import environments.cartpole_ball as cartpole_ball
+import environments.one_joint_ball as one_joint_ball
 
 # Find all domains imported.
 _DOMAINS = {name: module for name, module in locals().items()
