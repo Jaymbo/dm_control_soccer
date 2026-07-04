@@ -13,7 +13,7 @@
 # limitations under the License.
 # ============================================================================
 
-"""Cartpole domain."""
+"""Cartpole_ball domain."""
 
 import collections
 import os
@@ -30,79 +30,24 @@ import numpy as np
 
 _DEFAULT_TIME_LIMIT = 10
 SUITE = containers.TaggedTasks()
+FILE = 'one_joint_ball.xml'
 
 
 def get_model_and_assets(num_poles=1):
   """Returns a tuple containing the model XML string and a dict of assets."""
-  xml_path = os.path.join(os.path.dirname(__file__), 'one_joint_ball.xml')
+  xml_path = os.path.join(os.path.dirname(__file__), FILE)
   with open(xml_path, 'r') as f:
     xml_string = f.read()
   # Map the common includes to the actual assets from dm_control
   assets = {f"./common/{k}": v for k, v in common.ASSETS.items()}
   return xml_string, assets
 
-
 @SUITE.add('benchmarking')
-def balance(time_limit=_DEFAULT_TIME_LIMIT, random=None,
+def kick(time_limit=_DEFAULT_TIME_LIMIT, random=None,
             environment_kwargs=None):
-  """Returns the Cartpole Balance task."""
+  """Returns the kick task."""
   physics = Physics.from_xml_string(*get_model_and_assets())
-  task = Balance(swing_up=False, sparse=False, random=random)
-  environment_kwargs = environment_kwargs or {}
-  return control.Environment(
-      physics, task, time_limit=time_limit, **environment_kwargs)
-
-
-@SUITE.add('benchmarking')
-def balance_sparse(time_limit=_DEFAULT_TIME_LIMIT, random=None,
-                   environment_kwargs=None):
-  """Returns the sparse reward variant of the Cartpole Balance task."""
-  physics = Physics.from_xml_string(*get_model_and_assets())
-  task = Balance(swing_up=False, sparse=True, random=random)
-  environment_kwargs = environment_kwargs or {}
-  return control.Environment(
-      physics, task, time_limit=time_limit, **environment_kwargs)
-
-
-@SUITE.add('benchmarking')
-def swingup(time_limit=_DEFAULT_TIME_LIMIT, random=None,
-            environment_kwargs=None):
-  """Returns the Cartpole Swing-Up task."""
-  physics = Physics.from_xml_string(*get_model_and_assets())
-  task = Balance(swing_up=True, sparse=False, random=random)
-  environment_kwargs = environment_kwargs or {}
-  return control.Environment(
-      physics, task, time_limit=time_limit, **environment_kwargs)
-
-
-@SUITE.add('benchmarking')
-def swingup_sparse(time_limit=_DEFAULT_TIME_LIMIT, random=None,
-                   environment_kwargs=None):
-  """Returns the sparse reward variant of the Cartpole Swing-Up task."""
-  physics = Physics.from_xml_string(*get_model_and_assets())
-  task = Balance(swing_up=True, sparse=True, random=random)
-  environment_kwargs = environment_kwargs or {}
-  return control.Environment(
-      physics, task, time_limit=time_limit, **environment_kwargs)
-
-
-@SUITE.add()
-def two_poles(time_limit=_DEFAULT_TIME_LIMIT, random=None,
-              environment_kwargs=None):
-  """Returns the Cartpole Balance task with two poles."""
-  physics = Physics.from_xml_string(*get_model_and_assets(num_poles=2))
-  task = Balance(swing_up=True, sparse=False, random=random)
-  environment_kwargs = environment_kwargs or {}
-  return control.Environment(
-      physics, task, time_limit=time_limit, **environment_kwargs)
-
-
-@SUITE.add()
-def three_poles(time_limit=_DEFAULT_TIME_LIMIT, random=None, num_poles=3,
-                sparse=False, environment_kwargs=None):
-  """Returns the Cartpole Balance task with three or more poles."""
-  physics = Physics.from_xml_string(*get_model_and_assets(num_poles=num_poles))
-  task = Balance(swing_up=True, sparse=sparse, random=random)
+  task = Kick(random=random)
   environment_kwargs = environment_kwargs or {}
   return control.Environment(
       physics, task, time_limit=time_limit, **environment_kwargs)
@@ -110,7 +55,7 @@ def three_poles(time_limit=_DEFAULT_TIME_LIMIT, random=None, num_poles=3,
 
 def _make_model(n_poles):
   """Generates an xml string defining a cart with `n_poles` bodies."""
-  xml_string = common.read_model('cartpole.xml')
+  xml_string = common.read_model(FILE)
   if n_poles == 1:
     return xml_string
   mjcf = etree.fromstring(xml_string)
@@ -154,8 +99,8 @@ class Physics(mujoco.Physics):
                       self.named.data.xmat[2:, ['zz', 'xz']].ravel()))
 
 
-class Balance(base.Task):
-  """A Cartpole `Task` to balance the pole.
+class Kick(base.Task):
+  """A Cartpole_ball `Task` to kick the ball.
 
   State is initialized either close to the target configuration or at a random
   configuration.
@@ -163,40 +108,25 @@ class Balance(base.Task):
   _CART_RANGE = (-.25, .25)
   _ANGLE_COSINE_RANGE = (.995, 1)
 
-  def __init__(self, swing_up, sparse, random=None):
-    """Initializes an instance of `Balance`.
+  def __init__(self, random=None):
+    """Initializes an instance of `Kick`.
 
     Args:
-      swing_up: A `bool`, which if `True` sets the cart to the middle of the
-        slider and the pole pointing towards the ground. Otherwise, sets the
-        cart to a random position on the slider and the pole to a random
-        near-vertical position.
-      sparse: A `bool`, whether to return a sparse or a smooth reward.
       random: Optional, either a `numpy.random.RandomState` instance, an
         integer seed for creating a new `RandomState`, or None to select a seed
         automatically (default).
     """
-    self._sparse = sparse
-    self._swing_up = swing_up
     super().__init__(random=random)
 
   def initialize_episode(self, physics):
     """Sets the state of the environment at the start of each episode.
-
-    Initializes the cart and pole according to `swing_up`, and in both cases
-    adds a small random initial velocity to break symmetry.
-
     Args:
       physics: An instance of `Physics`.
     """
-    if self._swing_up:
-      physics.named.data.qpos['slider'] = .01*self.random.randn()
-      physics.named.data.qpos['hinge_1'] = np.pi + .01*self.random.randn()
-    else:
-      physics.named.data.qpos['slider'] = self.random.uniform(-.1, .1)
-      physics.named.data.qpos['hinge_1'] = self.random.uniform(-.034, .034)
+    physics.named.data.qpos['slider'] = -0.8 + .5*self.random.randn()
+    physics.named.data.qpos['knee'] = np.pi + .01*self.random.randn()
     physics.named.data.qvel['slider'] = 0.01 * self.random.randn()
-    physics.named.data.qvel['hinge_1'] = 0.01 * self.random.randn()
+    physics.named.data.qvel['knee'] = 0.01 * self.random.randn()
     super().initialize_episode(physics)
 
   def get_observation(self, physics):
