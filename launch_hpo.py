@@ -28,6 +28,8 @@ def build_parser():
                    help='Number of parallel workers (0 = auto-detect CPU count)')
     p.add_argument('--cpu_offset', type=int, default=0,
                    help='Pin workers to cores starting at this index (default: 0)')
+    p.add_argument('--nice', type=int, default=10,
+                   help='Nice priority for workers (default: 10, lower priority than normal)')
     # Unknown args are forwarded to hpo.py via parse_known_args
     return p
 
@@ -51,6 +53,29 @@ def pin_cpu(pid: int, core: int):
         pass
 
 
+def set_nice(pid: int, niceness: int = 10):
+    """Lower CPU scheduling priority (higher nice = lower priority).
+
+    Default nice=10 means other processes get CPU time first.
+    Range: -20 (highest) to 19 (lowest). Regular users can raise but not lower.
+    """
+    try:
+        os.nice(0)  # no-op, just to ensure os.nice is available
+        # os.nice only affects the calling process, so use sched_setscheduler
+        # via /proc or psutil. Simpler: use renice via subprocess.
+        import ctypes
+        libc = ctypes.CDLL('libc.so.6', use_errno=True)
+        # setpriority(PRIO_PROCESS, pid, nice)
+        PRIO_PROCESS = 0
+        ret = libc.setpriority(PRIO_PROCESS, pid, niceness)
+        if ret != 0:
+            errno = ctypes.get_errno()
+            print(f"  WARNING: setpriority failed (errno={errno}), "
+                  f"worker {pid} runs at default priority")
+    except Exception:
+        pass
+
+
 def main():
     parser = build_parser()
     args, hpo_args = parser.parse_known_args()
@@ -65,6 +90,7 @@ def main():
     print(f"Starting {n_workers} parallel HPO workers on {n_cpus} CPUs")
     print(f"Each worker pinned to a dedicated core (offset={args.cpu_offset})")
     print(f"Thread limit: 1 per worker (no oversubscription)")
+    print(f"Nice priority: {args.nice} (lower priority than normal processes)")
     if hpo_args:
         print(f"HPO args: {' '.join(hpo_args)}")
     print()
@@ -92,8 +118,9 @@ def main():
                     stderr=subprocess.STDOUT,
                 )
             pin_cpu(proc.pid, core)
+            set_nice(proc.pid, args.nice)
             processes.append((i, core, proc, log_path))
-            print(f"  Worker {i} -> PID {proc.pid}, CPU core {core}, log -> {log_path}")
+            print(f"  Worker {i} -> PID {proc.pid}, CPU core {core}, nice {args.nice}, log -> {log_path}")
             # Stagger start to reduce DB init contention
             time.sleep(1)
 
