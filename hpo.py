@@ -161,7 +161,9 @@ def main():
         study_name=args.study_name,
         storage=storage,
         direction='maximize',
-        sampler=optuna.samplers.TPESampler(seed=args.seed),
+        # Vary sampler seed per worker (PID) so parallel workers explore
+        # different regions. --seed is still used for training reproducibility.
+        sampler=optuna.samplers.TPESampler(seed=args.seed + os.getpid()),
         load_if_exists=True,
     )
 
