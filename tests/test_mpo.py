@@ -206,14 +206,15 @@ def test_save_load_roundtrip(tmp_path, agent):
     agent.log_lam_sigma.fill_(0.7)
 
     save_path = str(tmp_path / 'test_ckpt.pt')
-    agent.save(save_path, total_steps=12345, best_eval=42.0)
+    agent.save(save_path, total_steps=12345, best_eval=42.0, final_eval=38.5)
 
     # Create a new agent and load
     agent2 = MPO(obs_dim=6, act_dim=2, hidden_sizes=(32, 32), device='cpu')
-    total_steps, best_eval = agent2.load(save_path)
+    total_steps, best_eval, final_eval = agent2.load(save_path)
 
     assert total_steps == 12345
     assert best_eval == 42.0
+    assert final_eval == 38.5
     assert agent2.buffer.size == 50
 
     # Dual variables should match

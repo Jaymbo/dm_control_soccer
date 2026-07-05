@@ -93,6 +93,8 @@ def build_parser():
     p.add_argument('--batch_size', type=int, default=256)
     p.add_argument('--eval_every', type=int, default=5000)
     p.add_argument('--eval_episodes', type=int, default=5)
+    p.add_argument('--final_eval_episodes', type=int, default=10,
+                   help='Number of episodes for final evaluation after training')
     p.add_argument('--print_every', type=int, default=1000)
     p.add_argument('--save_dir', type=str, default='checkpoints')
     p.add_argument('--checkpoint_tag', type=str, default='',
@@ -196,10 +198,12 @@ def main():
     # --- Resume from checkpoint if it exists ---
     total_steps = 0
     best_eval = -1e9
+    final_eval = -1e9
     if args.resume and os.path.exists(save_path):
         print(f"Loading checkpoint: {save_path}", flush=True)
-        total_steps, best_eval = agent.load(save_path)
+        total_steps, best_eval, final_eval = agent.load(save_path)
         print(f"  Resumed from {total_steps} steps | best_eval={best_eval:.3f} | "
+              f"final_eval={final_eval:.3f} | "
               f"buffer={agent.buffer.size}", flush=True)
 
     # --- Random exploration (only if starting fresh) ---
@@ -317,16 +321,23 @@ def main():
                 agent.save(save_path, total_steps=total_steps, best_eval=best_eval)
                 print(f"      Saved best model -> {save_path}", flush=True)
 
-    # Final save
-    agent.save(save_path, total_steps=total_steps, best_eval=best_eval)
+    # --- Final evaluation (robust: mean over multiple episodes) ---
+    final_rewards = evaluate(eval_env, agent, num_episodes=args.final_eval_episodes, deterministic=True)
+    final_eval = float(np.mean(final_rewards))
+    print(f"  >>> FINAL_EVAL @ {total_steps} steps: mean={final_eval:.3f} "
+          f"({args.final_eval_episodes} episodes: {[f'{r:.2f}' for r in final_rewards]})", flush=True)
+
+    # Final save (includes final_eval)
+    agent.save(save_path, total_steps=total_steps, best_eval=best_eval, final_eval=final_eval)
     print(f"Training done. Final model saved -> {save_path}", flush=True)
 
     if use_mlflow:
         import mlflow
         mlflow.log_metric('best_eval_reward', best_eval)
+        mlflow.log_metric('final_eval_reward', final_eval)
         mlflow.end_run()
 
-    return best_eval
+    return final_eval
 
 
 if __name__ == '__main__':

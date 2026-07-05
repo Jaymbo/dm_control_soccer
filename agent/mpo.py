@@ -267,12 +267,13 @@ class MPO:
     # ------------------------------------------------------------------
     # Save / Load
     # ------------------------------------------------------------------
-    def save(self, path, total_steps=0, best_eval=-1e9):
+    def save(self, path, total_steps=0, best_eval=-1e9, final_eval=-1e9):
         """Save full training state for resuming.
 
         Args:
             total_steps: environment steps completed so far.
-            best_eval:   best eval reward achieved so far.
+            best_eval:   best intermediate eval reward achieved during training.
+            final_eval:  robust final eval reward (mean over multiple episodes).
         """
         torch.save({
             'policy': self.policy.state_dict(),
@@ -285,10 +286,11 @@ class MPO:
             'replay_buffer': self.buffer.state_dict(),
             'total_steps': total_steps,
             'best_eval': best_eval,
+            'final_eval': final_eval,
         }, path)
 
     def load(self, path):
-        """Load full training state.  Returns (total_steps, best_eval)."""
+        """Load full training state.  Returns (total_steps, best_eval, final_eval)."""
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
         self.policy.load_state_dict(ckpt['policy'])
         self.q.load_state_dict(ckpt['q'])
@@ -302,4 +304,5 @@ class MPO:
             self.buffer.load_state_dict(ckpt['replay_buffer'])
         total_steps = ckpt.get('total_steps', 0)
         best_eval = ckpt.get('best_eval', -1e9)
-        return total_steps, best_eval
+        final_eval = ckpt.get('final_eval', -1e9)
+        return total_steps, best_eval, final_eval

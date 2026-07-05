@@ -79,8 +79,8 @@ def _find_best_checkpoint(domain, task):
 
     Priority:
       1. Standard checkpoint: checkpoints/mpo_<domain>_<task>.pt
-      2. Best HPO trial via Optuna DB (optuna.db)
-      3. Best HPO trial by comparing best_eval in checkpoint files
+      2. Best HPO trial via Optuna DB (optuna.db) — uses final_eval
+      3. Best HPO trial by comparing final_eval in checkpoint files
     """
     save_dir = 'checkpoints'
     base_name = f'mpo_{domain}_{task}'
@@ -102,14 +102,15 @@ def _find_best_checkpoint(domain, task):
             study = optuna.load_study(study_name='mpo_hpo', storage=storage)
             best_trial = study.best_trial
             best_path = os.path.join(save_dir, f'{base_name}_trial{best_trial.number}.pt')
+            steps = best_trial.user_attrs.get('steps', '?')
             if os.path.exists(best_path):
                 print(f"Auto-selected best HPO trial {best_trial.number} "
-                      f"(eval={best_trial.value:.3f}) from Optuna DB")
+                      f"(final_eval={best_trial.value:.3f}, steps={steps}) from Optuna DB")
                 return best_path
         except Exception:
             pass  # Fall through to filesystem scan
 
-    # 3. Filesystem scan: load each trial checkpoint and compare best_eval
+    # 3. Filesystem scan: load each trial checkpoint and compare final_eval
     pattern = os.path.join(save_dir, f'{base_name}_trial*.pt')
     trial_files = glob.glob(pattern)
     if not trial_files:
@@ -117,21 +118,24 @@ def _find_best_checkpoint(domain, task):
 
     best_eval = -1e9
     best_path = None
+    best_steps = '?'
     for f in trial_files:
         try:
             ckpt = torch.load(f, map_location='cpu', weights_only=False)
-            eval_val = ckpt.get('best_eval', -1e9)
+            # Prefer final_eval; fall back to best_eval for old checkpoints
+            eval_val = ckpt.get('final_eval', ckpt.get('best_eval', -1e9))
             if eval_val > best_eval:
                 best_eval = eval_val
                 best_path = f
+                best_steps = ckpt.get('total_steps', '?')
         except Exception:
             continue
 
     if best_path:
         m = re.search(r'trial(\d+)', os.path.basename(best_path))
         trial_num = m.group(1) if m else '?'
-        print(f"Auto-selected trial {trial_num} (best_eval={best_eval:.3f}) "
-              f"from {len(trial_files)} checkpoints")
+        print(f"Auto-selected trial {trial_num} (final_eval={best_eval:.3f}, "
+              f"steps={best_steps}) from {len(trial_files)} checkpoints")
         return best_path
 
     return standard
@@ -169,7 +173,12 @@ def main():
         sys.exit(1)
 
     agent.load(args.checkpoint)
+    # Load metadata for display
+    ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
+    total_steps = ckpt.get('total_steps', '?')
+    final_eval = ckpt.get('final_eval', ckpt.get('best_eval', '?'))
     print(f"Loaded checkpoint: {args.checkpoint}")
+    print(f"  Steps: {total_steps} | Final eval: {final_eval} | Best eval: {ckpt.get('best_eval', '?')}")
 
     deterministic = not args.stochastic
 

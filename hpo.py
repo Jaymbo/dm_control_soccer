@@ -1,7 +1,8 @@
 """Hyperparameter Optimisation for MPO using Optuna + MLflow.
 
 Each trial runs a short training and logs metrics to MLflow.
-Optuna uses the best mean eval reward as optimisation objective.
+Optuna uses the **final eval reward** (robust mean over 10 episodes)
+as optimisation objective — not the best intermediate eval.
 
 Usage:
     python hpo.py --trials 20 --steps 20000
@@ -92,7 +93,7 @@ def make_objective(args):
 
         # Run training as subprocess (clean process each trial)
         print(f"\n{'='*60}")
-        print(f"Trial {trial.number} | params: {hp}")
+        print(f"Trial {trial.number} | steps={args.steps} | params: {hp}")
         print(f"{'='*60}")
 
         result = subprocess.run(cmd, capture_output=True, text=True,
@@ -102,24 +103,21 @@ def make_objective(args):
             print(f"STDERR: {result.stderr[-500:]}")
             return -1e9
 
-        # Parse best eval reward from stdout
-        best_eval = -1e9
+        # Parse FINAL_EVAL (robust final evaluation, not best intermediate)
+        final_eval = -1e9
         for line in result.stdout.splitlines():
-            if 'Saved best model' in line or 'EVAL' in line:
-                pass
-            if 'Training done' in line:
-                pass
-        # Look for "best_eval_reward" or parse eval lines
-        for line in result.stdout.splitlines():
-            if 'EVAL' in line and 'mean=' in line:
+            if 'FINAL_EVAL' in line and 'mean=' in line:
                 try:
-                    val = float(line.split('mean=')[1].split()[0])
-                    best_eval = max(best_eval, val)
+                    final_eval = float(line.split('mean=')[1].split()[0])
                 except (ValueError, IndexError):
                     pass
 
-        print(f"Trial {trial.number} best_eval = {best_eval:.3f}")
-        return best_eval
+        # Store steps as trial metadata for cross-run comparison
+        trial.set_user_attr('steps', args.steps)
+        trial.set_user_attr('final_eval', final_eval)
+
+        print(f"Trial {trial.number} final_eval = {final_eval:.3f} (steps={args.steps})")
+        return final_eval
 
     return objective
 
@@ -178,7 +176,7 @@ def main():
         from mlflow_optuna import MLflowCallback
         mlflow_callback = MLflowCallback(
             tracking_uri=mlflow_uri,
-            metric_name='best_eval_reward',
+            metric_name='final_eval_reward',
         )
         study.optimize(objective, n_trials=n_trials,
                        callbacks=[mlflow_callback])
