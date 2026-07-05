@@ -23,6 +23,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent.mpo import MPO
 
+# SQLite busy timeout (ms) — allows multiple parallel workers to wait
+# instead of immediately failing with "database is locked".
+SQLITE_BUSY_TIMEOUT_MS = 30000
+
+
+def _add_sqlite_busy_timeout(uri: str) -> str:
+    """Append busy_timeout pragma to a sqlite:/// URI (no-op for other URIs)."""
+    if uri.startswith('sqlite:///'):
+        sep = '&' if '?' in uri else '?'
+        if 'busy_timeout' not in uri:
+            uri = f'{uri}{sep}busy_timeout={SQLITE_BUSY_TIMEOUT_MS}'
+    return uri
+
 
 def get_obs_dim(env):
     """Compute flat observation dimension from dm_control observation spec."""
@@ -133,10 +146,11 @@ def main():
     use_mlflow = args.mlflow
     if use_mlflow:
         import mlflow
+        mlflow_uri = _add_sqlite_busy_timeout(args.mlflow_tracking_uri)
         # Retry to handle parallel workers racing on DB init
         for attempt in range(5):
             try:
-                mlflow.set_tracking_uri(args.mlflow_tracking_uri)
+                mlflow.set_tracking_uri(mlflow_uri)
                 mlflow.set_experiment(args.mlflow_experiment)
                 mlflow.start_run(run_name=args.mlflow_run_name)
                 break

@@ -20,6 +20,19 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# SQLite busy timeout (ms) — allows multiple parallel workers to wait
+# instead of immediately failing with "database is locked".
+SQLITE_BUSY_TIMEOUT_MS = 30000
+
+
+def _add_sqlite_busy_timeout(uri: str) -> str:
+    """Append busy_timeout pragma to a sqlite:/// URI (no-op for other URIs)."""
+    if uri.startswith('sqlite:///'):
+        sep = '&' if '?' in uri else '?'
+        if 'busy_timeout' not in uri:
+            uri = f'{uri}{sep}busy_timeout={SQLITE_BUSY_TIMEOUT_MS}'
+    return uri
+
 
 def build_parser():
     p = argparse.ArgumentParser()
@@ -70,7 +83,7 @@ def make_objective(args):
             '--no-resume',                           # HPO trials start fresh
             '--checkpoint_tag', f'trial{trial.number}',  # unique ckpt per trial
         ]
-        cmd += ['--mlflow_tracking_uri', args.mlflow_tracking_uri]
+        cmd += ['--mlflow_tracking_uri', _add_sqlite_busy_timeout(args.mlflow_tracking_uri)]
         cmd += ['--mlflow_experiment', args.mlflow_experiment]
         cmd += ['--mlflow_run_name', f'trial_{trial.number}']
 
@@ -121,11 +134,17 @@ def main():
     import optuna
     import mlflow
 
+    # Append SQLite busy_timeout to URIs for parallel worker safety.
+    mlflow_uri = _add_sqlite_busy_timeout(args.mlflow_tracking_uri)
+    optuna_uri = args.optuna_storage
+    if optuna_uri.startswith('sqlite:///'):
+        optuna_uri = _add_sqlite_busy_timeout(optuna_uri)
+
     # MLflow DB init can race when multiple HPO workers start simultaneously.
     # Retry with backoff to handle "table already exists" errors.
     for attempt in range(5):
         try:
-            mlflow.set_tracking_uri(args.mlflow_tracking_uri)
+            mlflow.set_tracking_uri(mlflow_uri)
             mlflow.set_experiment(args.mlflow_experiment)
             break
         except Exception as e:
@@ -135,9 +154,14 @@ def main():
             else:
                 raise
 
+    # RDBStorage with connect_args timeout for safe concurrent access.
+    storage = optuna.storages.RDBStorage(
+        optuna_uri,
+        engine_kwargs={'connect_args': {'timeout': SQLITE_BUSY_TIMEOUT_MS / 1000}},
+    )
     study = optuna.create_study(
         study_name=args.study_name,
-        storage=args.optuna_storage,
+        storage=storage,
         direction='maximize',
         sampler=optuna.samplers.TPESampler(seed=args.seed),
         load_if_exists=True,
@@ -153,7 +177,7 @@ def main():
     try:
         from mlflow_optuna import MLflowCallback
         mlflow_callback = MLflowCallback(
-            tracking_uri=args.mlflow_tracking_uri,
+            tracking_uri=mlflow_uri,
             metric_name='best_eval_reward',
         )
         study.optimize(objective, n_trials=n_trials,
