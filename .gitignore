@@ -8,3 +8,4 @@ optuna.db
 optuna.db-journal
 checkpoints/
 .pytest_cache/
+hpo_logs/
