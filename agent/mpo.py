@@ -2,13 +2,15 @@
 
 Reference: Abdolmaleki et al., "Maximum a Posteriori Policy Optimization", ICLR 2018.
 
-Simplified but faithful implementation:
-  - Twin Q-networks with target networks (SAC-style critic)
+Implementation following the paper:
+  - Twin Q-networks with target networks (unregularised Q, no SAC entropy bonus)
   - E-step: sample K actions per state from current policy, compute
-    advantage-weighted target distribution via temperature eta (dual descent
-    on an entropy constraint).
+    target distribution q(a|s) ∝ π(a|s) exp(Q(s,a)/η) via temperature η.
+    η is optimised by dual descent on the KL constraint E[KL(q‖π)] < ε.
   - M-step: update policy to minimise weighted NLL under target distribution
-    plus Lagrangian KL(π_old || π_new) term with multiplier lambda.
+    plus Lagrangian KL(π_old ‖ π_new) penalty with **decoupled** multipliers
+    λ_μ (mean) and λ_Σ (covariance), as per Appendix D.3 of the paper.
+    ε_μ = 0.1, ε_Σ = 0.0001 (very tight to prevent entropy collapse).
 
 Designed for dm_control environments with 1-D dict observations.
 """
@@ -30,11 +32,12 @@ class MPO:
         device='cpu',
         gamma=0.99,
         polyak=0.995,
-        critic_lr=3e-4,
-        actor_lr=1e-4,
+        critic_lr=5e-4,
+        actor_lr=5e-4,
         num_action_samples=20,
-        action_min_entropy=2.0,
-        kl_eps=0.1,
+        eps_eta=0.1,
+        eps_mu=0.1,
+        eps_sigma=0.0001,
         dual_lr=0.001,
         hidden_sizes=(256, 256),
     ):
@@ -42,9 +45,13 @@ class MPO:
         self.gamma = gamma
         self.polyak = polyak
         self.K = num_action_samples
-        self.action_min_entropy = action_min_entropy
-        self.kl_eps = kl_eps
+        self.eps_eta = eps_eta
+        self.eps_mu = eps_mu
+        self.eps_sigma = eps_sigma
         self.dual_lr = dual_lr
+
+        # E-step entropy floor: KL(q‖π) < ε  ⟺  entropy(q) > log(K) - ε
+        self.action_min_entropy = float(np.log(self.K) - eps_eta)
 
         self.policy = GaussianPolicy(obs_dim, act_dim, hidden_sizes, act_limit).to(self.device)
         self.policy_target = copy.deepcopy(self.policy).to(self.device)
@@ -59,11 +66,13 @@ class MPO:
         self.policy_optim = torch.optim.Adam(self.policy.parameters(), lr=actor_lr)
         self.q_optim = torch.optim.Adam(self.q.parameters(), lr=critic_lr)
 
-        # Dual variables (learned via multiplicative update, not gradient descent)
-        # eta: temperature for E-step, initialised at 1.0
+        # Dual variables (multiplicative update in log-space, cf. paper Eq. 9 & D.3)
+        # eta: E-step temperature (dual descent on KL constraint)
         self.log_eta = torch.tensor(0.0, device=self.device)
-        # lambda: Lagrange multiplier for M-step KL constraint
-        self.log_lambda = torch.tensor(0.0, device=self.device)
+        # lambda_mu: M-step Lagrange multiplier for mean KL constraint
+        self.log_lam_mu = torch.tensor(0.0, device=self.device)
+        # lambda_sigma: M-step Lagrange multiplier for covariance KL constraint
+        self.log_lam_sigma = torch.tensor(0.0, device=self.device)
 
         self.buffer = ReplayBuffer(obs_dim, act_dim, size=200000, device=self.device)
 
@@ -94,12 +103,17 @@ class MPO:
     # Critic update (SAC-style double Q-learning)
     # ------------------------------------------------------------------
     def update_critic(self, batch):
+        """Unregularised Q-learning (paper Eq. 5: no SAC entropy bonus).
+
+        Target: r + γ (1 - done) * min(Q1', Q2')
+        Next actions sampled from the **target** policy (for TD target).
+        """
         obs, obs2, act, rew, done = batch['obs'], batch['obs2'], batch['act'], batch['rew'], batch['done']
 
         with torch.no_grad():
-            next_act, next_logp, _ = self.policy_target.sample(obs2)
+            next_act, _, _ = self.policy_target.sample(obs2)
             q1_t, q2_t = self.q_target(obs2, next_act)
-            q_target = rew + self.gamma * (1 - done) * (torch.min(q1_t, q2_t) - 0.2 * next_logp)
+            q_target = rew + self.gamma * (1 - done) * torch.min(q1_t, q2_t)
 
         q1, q2 = self.q(obs, act)
         critic_loss = F.mse_loss(q1, q_target) + F.mse_loss(q2, q_target)
@@ -144,6 +158,13 @@ class MPO:
     # M-step: policy and dual variable updates
     # ------------------------------------------------------------------
     def update_actor(self, batch):
+        """M-step (paper Eq. 11, Appendix D.3 Eq. 27).
+
+        Minimises:  -Σ_k w_k log π(a_k|s)  +  λ_μ C_μ  +  λ_Σ C_Σ
+        where C_μ is the mean-part and C_Σ the covariance-part of
+        KL(π_old ‖ π_new), with **separate** Lagrange multipliers and
+        constraints (ε_μ = 0.1, ε_Σ = 0.0001).
+        """
         obs = batch['obs']
         B = obs.shape[0]
 
@@ -160,15 +181,23 @@ class MPO:
         # Weighted NLL: -sum_k w_k * log pi(a_k|s)
         nll_loss = -(weights.detach() * log_pi).sum(-1).mean()
 
-        # KL(π_old || π_new) penalty using current lambda
+        # --- Decoupled KL(π_old ‖ π_new) penalty (Appendix D.3, Eq. 27) ---
+        # For diagonal Gaussian with old (μ_i, σ_i) and new (μ, σ):
+        #   C_μ  = ½ Σ_d (μ_d - μ_i,d)² / σ_d²          (mean part, ε_μ = 0.1)
+        #   C_Σ  = ½ Σ_d [σ_i,d²/σ_d² - 1 + 2 log(σ_d/σ_i,d)]  (cov part, ε_Σ = 0.0001)
+        mean_new, log_std_new = self.policy(obs_rep)          # [B*K, act_dim]
+        std_new = log_std_new.exp()
         with torch.no_grad():
             mean_old, log_std_old = self.policy_target(obs_rep)
             std_old = log_std_old.exp()
-            log_pi_old = torch.distributions.Normal(mean_old, std_old).log_prob(x_pre_flat).sum(-1).reshape(B, self.K)
 
-        kl_before = (log_pi - log_pi_old).mean()
-        lam = self.log_lambda.exp()
-        kl_loss = lam.detach() * kl_before
+        C_mu = 0.5 * (((mean_new - mean_old) / std_new) ** 2).sum(-1).mean()
+        C_sigma = 0.5 * ((std_old / std_new) ** 2 - 1
+                         + 2 * (log_std_new - log_std_old)).sum(-1).mean()
+
+        lam_mu = self.log_lam_mu.exp()
+        lam_sigma = self.log_lam_sigma.exp()
+        kl_loss = lam_mu.detach() * C_mu + lam_sigma.detach() * C_sigma
 
         actor_loss = nll_loss + kl_loss
 
@@ -176,26 +205,32 @@ class MPO:
         actor_loss.backward()
         self.policy_optim.step()
 
-        # --- Measure KL AFTER the policy update ---
+        # --- Measure KL components AFTER the policy update ---
         with torch.no_grad():
-            log_pi_new = self.policy.log_prob(obs_rep, x_pre_flat).reshape(B, self.K)
-            kl_after = (log_pi_new - log_pi_old).mean()
+            mean_new2, log_std_new2 = self.policy(obs_rep)
+            std_new2 = log_std_new2.exp()
+            C_mu_after = 0.5 * (((mean_new2 - mean_old) / std_new2) ** 2).sum(-1).mean()
+            C_sigma_after = 0.5 * ((std_old / std_new2) ** 2 - 1
+                                   + 2 * (log_std_new2 - log_std_old)).sum(-1).mean()
 
-        # --- Dual updates (multiplicative, as in original MPO paper) ---
-        # eta: ensure target_entropy >= action_min_entropy
-        #   If entropy < threshold → eta should increase → log_eta += lr * (threshold - entropy)
-        # lambda: ensure KL <= kl_eps
-        #   If KL > eps → lambda should increase → log_lambda += lr * (KL - eps)
+        # --- Dual updates (multiplicative in log-space) ---
+        # eta:     entropy(q) must stay ≥ log(K) - ε  →  increase η when too low
+        # λ_μ:     C_μ must stay ≤ ε_μ               →  increase λ_μ when exceeded
+        # λ_Σ:     C_Σ must stay ≤ ε_Σ               →  increase λ_Σ when exceeded
         with torch.no_grad():
-            eta_update = self.dual_lr * (self.action_min_entropy - target_entropy)
-            self.log_eta += eta_update
-            lam_update = self.dual_lr * (kl_after - self.kl_eps)
-            self.log_lambda += lam_update
-
+            self.log_eta += self.dual_lr * (self.action_min_entropy - target_entropy)
             self.log_eta.clamp_(-5, 5)
-            self.log_lambda.clamp_(-3, 3)
 
-        return actor_loss.item(), kl_after.item(), self.log_eta.exp().item(), self.log_lambda.exp().item()
+            self.log_lam_mu += self.dual_lr * (C_mu_after - self.eps_mu)
+            self.log_lam_mu.clamp_(-3, 3)
+
+            self.log_lam_sigma += self.dual_lr * (C_sigma_after - self.eps_sigma)
+            self.log_lam_sigma.clamp_(-3, 3)
+
+        return (actor_loss.item(), C_mu_after.item(), C_sigma_after.item(),
+                self.log_eta.exp().item(),
+                self.log_lam_mu.exp().item(),
+                self.log_lam_sigma.exp().item())
 
     # ------------------------------------------------------------------
     # Target network update
@@ -210,37 +245,61 @@ class MPO:
     # ------------------------------------------------------------------
     # Full update step
     # ------------------------------------------------------------------
-    def update(self, batch_size=256, num_critic_updates=1, num_actor_updates=1):
+    def update(self, batch_size=256, num_critic_updates=10, num_actor_updates=10):
+        """Full update step.  Defaults follow paper Algorithm 2: many gradient
+        steps between data-collection rounds.  Target networks are updated once
+        at the end (paper copies Q-target after M-step; we use Polyak averaging
+        for smoother updates)."""
         results = {}
         for _ in range(num_critic_updates):
             batch = self.buffer.sample_batch(batch_size)
             results['critic_loss'] = self.update_critic(batch)
         for _ in range(num_actor_updates):
             batch = self.buffer.sample_batch(batch_size)
-            a_loss, kl, eta, lam = self.update_actor(batch)
-            results.update(dict(actor_loss=a_loss, kl=kl, eta=eta, lam=lam))
+            a_loss, c_mu, c_sigma, eta, lam_mu, lam_sigma = self.update_actor(batch)
+            results.update(dict(
+                actor_loss=a_loss, kl_mu=c_mu, kl_sigma=c_sigma,
+                eta=eta, lam_mu=lam_mu, lam_sigma=lam_sigma,
+            ))
         self.update_targets()
         return results
 
     # ------------------------------------------------------------------
     # Save / Load
     # ------------------------------------------------------------------
-    def save(self, path):
+    def save(self, path, total_steps=0, best_eval=-1e9):
+        """Save full training state for resuming.
+
+        Args:
+            total_steps: environment steps completed so far.
+            best_eval:   best eval reward achieved so far.
+        """
         torch.save({
             'policy': self.policy.state_dict(),
             'q': self.q.state_dict(),
             'q_target': self.q_target.state_dict(),
             'policy_target': self.policy_target.state_dict(),
             'log_eta': self.log_eta.item(),
-            'log_lambda': self.log_lambda.item(),
+            'log_lam_mu': self.log_lam_mu.item(),
+            'log_lam_sigma': self.log_lam_sigma.item(),
+            'replay_buffer': self.buffer.state_dict(),
+            'total_steps': total_steps,
+            'best_eval': best_eval,
         }, path)
 
     def load(self, path):
-        ckpt = torch.load(path, map_location=self.device)
+        """Load full training state.  Returns (total_steps, best_eval)."""
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
         self.policy.load_state_dict(ckpt['policy'])
         self.q.load_state_dict(ckpt['q'])
         self.q_target.load_state_dict(ckpt['q_target'])
         self.policy_target.load_state_dict(ckpt['policy_target'])
         with torch.no_grad():
             self.log_eta.fill_(ckpt['log_eta'])
-            self.log_lambda.fill_(ckpt['log_lambda'])
+            self.log_lam_mu.fill_(ckpt['log_lam_mu'])
+            self.log_lam_sigma.fill_(ckpt['log_lam_sigma'])
+        if 'replay_buffer' in ckpt:
+            self.buffer.load_state_dict(ckpt['replay_buffer'])
+        total_steps = ckpt.get('total_steps', 0)
+        best_eval = ckpt.get('best_eval', -1e9)
+        return total_steps, best_eval

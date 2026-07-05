@@ -32,3 +32,26 @@ class ReplayBuffer:
             done=torch.as_tensor(self.done_buf[idxs], dtype=torch.float32, device=self.device),
         )
         return batch
+
+    def state_dict(self):
+        """Return a dict of all buffer state for checkpointing."""
+        return {
+            'obs_buf': self.obs_buf[:self.size].copy(),
+            'obs2_buf': self.obs2_buf[:self.size].copy(),
+            'act_buf': self.act_buf[:self.size].copy(),
+            'rew_buf': self.rew_buf[:self.size].copy(),
+            'done_buf': self.done_buf[:self.size].copy(),
+            'ptr': self.ptr,
+            'size': self.size,
+        }
+
+    def load_state_dict(self, state):
+        """Load buffer state from a checkpoint dict."""
+        n = state['size']
+        self.obs_buf[:n] = state['obs_buf']
+        self.obs2_buf[:n] = state['obs2_buf']
+        self.act_buf[:n] = state['act_buf']
+        self.rew_buf[:n] = state['rew_buf']
+        self.done_buf[:n] = state['done_buf']
+        self.ptr = state['ptr']
+        self.size = n

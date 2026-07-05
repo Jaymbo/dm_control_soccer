@@ -4,3 +4,6 @@ dm-control>=1.0.0
 mujoco>=2.3.0
 lxml>=4.9.0
 scipy>=1.10.0
+mlflow>=2.0.0
+optuna>=3.0.0
+pytest>=7.0.0

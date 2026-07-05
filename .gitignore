@@ -1,1 +1,10 @@
 */__pycache__/*
+__pycache__/
+*.pyc
+mlruns/
+mlflow.db
+mlflow.db-journal
+optuna.db
+optuna.db-journal
+checkpoints/
+.pytest_cache/

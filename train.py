@@ -1,12 +1,16 @@
-"""Train MPO on dm_control CartPole (balance task).
+"""Train MPO on dm_control environments with MLflow logging.
 
 Usage:
-    python train.py --task balance --steps 100000
-    python train.py --task swingup   # harder task
+    python train.py --domain cartpole --task balance --steps 100000
+    python train.py --domain cartpole --task swingup --steps 200000
+    python train.py --steps 0                                # endless until Ctrl+C
 
-The environment can be swapped easily:
-    --domain cartpole --task balance   (original dm_control)
-    --domain cartpole_ball --task kick  (custom env)
+MLflow metrics logged per evaluation step:
+    ep_reward, eval_reward, critic_loss, actor_loss, eta, lam_mu, lam_sigma,
+    kl_mu, kl_sigma, fps
+
+Hyperparameters can be overridden via CLI args or environment variables
+(used by Optuna/MLflow HPO in hpo.py).
 """
 import argparse
 import os
@@ -64,30 +68,58 @@ def evaluate(env, agent, num_episodes=5, deterministic=True):
     return rewards
 
 
+def build_parser():
+    p = argparse.ArgumentParser()
+    p.add_argument('--domain', type=str, default='cartpole')
+    p.add_argument('--task', type=str, default='balance')
+    p.add_argument('--steps', type=int, default=100000,
+                   help='Total environment steps (0 = endless, run until Ctrl+C)')
+    p.add_argument('--start_steps', type=int, default=1000)
+    p.add_argument('--update_every', type=int, default=100)
+    p.add_argument('--updates_per_call', type=int, default=1)
+    p.add_argument('--batch_size', type=int, default=256)
+    p.add_argument('--eval_every', type=int, default=5000)
+    p.add_argument('--eval_episodes', type=int, default=5)
+    p.add_argument('--print_every', type=int, default=1000)
+    p.add_argument('--save_dir', type=str, default='checkpoints')
+    p.add_argument('--checkpoint_tag', type=str, default='',
+                   help='Append tag to checkpoint filename (e.g. for parallel HPO workers)')
+    p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--device', type=str, default='auto')
+    p.add_argument('--timing', action='store_true')
+    p.add_argument('--no-resume', dest='resume', action='store_false', default=True,
+                   help='Start from scratch even if a checkpoint exists')
+
+    # --- MPO hyperparameters (overrideable by HPO) ---
+    p.add_argument('--gamma', type=float, default=0.99)
+    p.add_argument('--polyak', type=float, default=0.995)
+    p.add_argument('--critic_lr', type=float, default=5e-4)
+    p.add_argument('--actor_lr', type=float, default=5e-4)
+    p.add_argument('--num_action_samples', type=int, default=20)
+    p.add_argument('--eps_eta', type=float, default=0.1)
+    p.add_argument('--eps_mu', type=float, default=0.1)
+    p.add_argument('--eps_sigma', type=float, default=0.0001)
+    p.add_argument('--dual_lr', type=float, default=0.001)
+    p.add_argument('--num_critic_updates', type=int, default=10)
+    p.add_argument('--num_actor_updates', type=int, default=10)
+
+    # --- MLflow ---
+    p.add_argument('--mlflow', action='store_true', default=True,
+                   help='Log metrics to MLflow (default: on)')
+    p.add_argument('--no-mlflow', dest='mlflow', action='store_false')
+    p.add_argument('--mlflow_tracking_uri', type=str, default='sqlite:///mlflow.db')
+    p.add_argument('--mlflow_experiment', type=str, default=None,
+                   help='MLflow experiment name (default: <domain>_<task>)')
+    p.add_argument('--mlflow_run_name', type=str, default=None)
+    return p
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--domain', type=str, default='cartpole')
-    parser.add_argument('--task', type=str, default='balance')
-    parser.add_argument('--steps', type=int, default=100000,
-                        help='Total number of environment steps')
-    parser.add_argument('--start_steps', type=int, default=1000,
-                        help='Random exploration steps before training')
-    parser.add_argument('--update_every', type=int, default=4,
-                        help='Do gradient updates every N env steps')
-    parser.add_argument('--updates_per_call', type=int, default=1,
-                        help='Gradient steps per update call')
-    parser.add_argument('--batch_size', type=int, default=256)
-    parser.add_argument('--eval_every', type=int, default=5000,
-                        help='Evaluate every N env steps')
-    parser.add_argument('--eval_episodes', type=int, default=5)
-    parser.add_argument('--print_every', type=int, default=1000,
-                        help='Print progress every N env steps')
-    parser.add_argument('--save_dir', type=str, default='checkpoints')
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--device', type=str, default='auto')
-    parser.add_argument('--timing', action='store_true',
-                        help='Print per-phase timing breakdown (env, critic, actor, target, eval)')
-    args = parser.parse_args()
+    args = build_parser().parse_args()
+
+    # Default experiment name: domain_task (e.g. cartpole_balance)
+    if args.mlflow_experiment is None:
+        args.mlflow_experiment = f'{args.domain}_{args.task}'
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -97,6 +129,33 @@ def main():
         device = 'cpu'
     print(f"Device: {device}")
 
+    # --- MLflow setup ---
+    use_mlflow = args.mlflow
+    if use_mlflow:
+        import mlflow
+        # Retry to handle parallel workers racing on DB init
+        for attempt in range(5):
+            try:
+                mlflow.set_tracking_uri(args.mlflow_tracking_uri)
+                mlflow.set_experiment(args.mlflow_experiment)
+                mlflow.start_run(run_name=args.mlflow_run_name)
+                break
+            except Exception as e:
+                if attempt < 4:
+                    print(f"MLflow init attempt {attempt+1} failed ({e}), retrying...")
+                    time.sleep(2 ** attempt)
+                else:
+                    raise
+        # Log all hyperparameters
+        hp_keys = [
+            'domain', 'task', 'steps', 'start_steps', 'update_every',
+            'updates_per_call', 'batch_size', 'eval_every', 'seed',
+            'gamma', 'polyak', 'critic_lr', 'actor_lr',
+            'num_action_samples', 'eps_eta', 'eps_mu', 'eps_sigma',
+            'dual_lr', 'num_critic_updates', 'num_actor_updates',
+        ]
+        mlflow.log_params({k: getattr(args, k) for k in hp_keys})
+
     env = make_env(args.domain, args.task)
     eval_env = make_env(args.domain, args.task)
 
@@ -105,30 +164,48 @@ def main():
     act_limit = get_act_limit(env)
     print(f"Env: {args.domain}/{args.task} | obs_dim={obs_dim}, act_dim={act_dim}, act_limit={act_limit}")
 
-    agent = MPO(obs_dim, act_dim, act_limit=act_limit, device=device)
+    agent = MPO(
+        obs_dim, act_dim, act_limit=act_limit, device=device,
+        gamma=args.gamma, polyak=args.polyak,
+        critic_lr=args.critic_lr, actor_lr=args.actor_lr,
+        num_action_samples=args.num_action_samples,
+        eps_eta=args.eps_eta, eps_mu=args.eps_mu, eps_sigma=args.eps_sigma,
+        dual_lr=args.dual_lr,
+    )
 
     os.makedirs(args.save_dir, exist_ok=True)
-    save_path = os.path.join(args.save_dir, f'mpo_{args.domain}_{args.task}.pt')
+    ckpt_name = f'mpo_{args.domain}_{args.task}'
+    if args.checkpoint_tag:
+        ckpt_name += f'_{args.checkpoint_tag}'
+    save_path = os.path.join(args.save_dir, f'{ckpt_name}.pt')
 
-    # --- Random exploration ---
-    print(f"Collecting {args.start_steps} random steps...", flush=True)
-    time_step = env.reset()
-    for step in range(args.start_steps):
-        action = np.random.uniform(env.action_spec().minimum, env.action_spec().maximum, act_dim)
-        next_step = env.step(action)
-        reward = float(next_step.reward) if next_step.reward is not None else 0.0
-        agent.store(time_step.observation, action, reward, next_step.observation, next_step.last())
-        time_step = next_step
-        if time_step.last():
-            time_step = env.reset()
-        if (step + 1) % 500 == 0:
-            print(f"  random: {step+1}/{args.start_steps}", flush=True)
-    print(f"Random collection done. Buffer size: {agent.buffer.size}", flush=True)
+    # --- Resume from checkpoint if it exists ---
+    total_steps = 0
+    best_eval = -1e9
+    if args.resume and os.path.exists(save_path):
+        print(f"Loading checkpoint: {save_path}", flush=True)
+        total_steps, best_eval = agent.load(save_path)
+        print(f"  Resumed from {total_steps} steps | best_eval={best_eval:.3f} | "
+              f"buffer={agent.buffer.size}", flush=True)
+
+    # --- Random exploration (only if starting fresh) ---
+    if total_steps == 0:
+        print(f"Collecting {args.start_steps} random steps...", flush=True)
+        time_step = env.reset()
+        for step in range(args.start_steps):
+            action = np.random.uniform(env.action_spec().minimum, env.action_spec().maximum, act_dim)
+            next_step = env.step(action)
+            reward = float(next_step.reward) if next_step.reward is not None else 0.0
+            agent.store(time_step.observation, action, reward, next_step.observation, next_step.last())
+            time_step = next_step
+            if time_step.last():
+                time_step = env.reset()
+            if (step + 1) % 500 == 0:
+                print(f"  random: {step+1}/{args.start_steps}", flush=True)
+        print(f"Random collection done. Buffer size: {agent.buffer.size}", flush=True)
 
     # --- Training loop (step-based) ---
-    total_steps = 0
     episode = 0
-    best_eval = -1e9
     t0 = time.time()
     ep_reward = 0.0
     ep_steps = 0
@@ -136,14 +213,16 @@ def main():
 
     # Timing accumulators (seconds)
     t_env = 0.0
-    t_critic = 0.0
-    t_actor = 0.0
-    t_target = 0.0
+    t_train = 0.0
     t_eval = 0.0
 
     time_step = env.reset()
 
-    while total_steps < args.steps:
+    max_steps = args.steps if args.steps > 0 else float('inf')
+    if max_steps == float('inf'):
+        print("Endless training. Press Ctrl+C to stop.\n", flush=True)
+
+    while total_steps < max_steps:
         # --- Collect one step ---
         _t = time.time()
         obs = time_step.observation
@@ -163,6 +242,9 @@ def main():
         if done:
             episode += 1
             last_ep_reward = ep_reward
+            if use_mlflow:
+                import mlflow
+                mlflow.log_metric('ep_reward', ep_reward, step=total_steps)
             ep_reward = 0.0
             ep_steps = 0
             time_step = env.reset()
@@ -171,32 +253,27 @@ def main():
         if total_steps % args.update_every == 0:
             for _ in range(args.updates_per_call):
                 _t = time.time()
-                agent.update_critic(agent.buffer.sample_batch(args.batch_size))
-                t_critic += time.time() - _t
-
-                _t = time.time()
-                agent.update_actor(agent.buffer.sample_batch(args.batch_size))
-                t_actor += time.time() - _t
-
-            _t = time.time()
-            agent.update_targets()
-            t_target += time.time() - _t
+                results = agent.update(
+                    batch_size=args.batch_size,
+                    num_critic_updates=args.num_critic_updates,
+                    num_actor_updates=args.num_actor_updates,
+                )
+                t_train += time.time() - _t
 
         # --- Progress ---
         if total_steps % args.print_every == 0:
             elapsed = time.time() - t0
-            print(f"[{total_steps:>7d}/{args.steps}] ep={episode} | "
-                  f"last_ep_reward={last_ep_reward:.3f} | "
-                  f"cur_ep_reward={ep_reward:.3f} | "
+            steps_display = f'{args.steps}' if args.steps > 0 else 'inf'
+            print(f"[{total_steps:>7d}/{steps_display}] ep={episode} | "
+                  f"ep_reward={last_ep_reward:.1f} | "
                   f"eta={agent.log_eta.exp().item():.3f} | "
-                  f"lam={agent.log_lambda.exp().item():.3f} | "
+                  f"lam_mu={agent.log_lam_mu.exp().item():.3f} | "
+                  f"lam_sig={agent.log_lam_sigma.exp().item():.3f} | "
                   f"fps={total_steps/elapsed:.1f}", flush=True)
             if args.timing:
-                total_timed = t_env + t_critic + t_actor + t_target + t_eval
+                total_timed = t_env + t_train + t_eval
                 print(f"    TIMING (s): env={t_env:.2f} ({t_env/total_timed*100:.0f}%) | "
-                      f"critic={t_critic:.2f} ({t_critic/total_timed*100:.0f}%) | "
-                      f"actor={t_actor:.2f} ({t_actor/total_timed*100:.0f}%) | "
-                      f"target={t_target:.2f} ({t_target/total_timed*100:.0f}%) | "
+                      f"train={t_train:.2f} ({t_train/total_timed*100:.0f}%) | "
                       f"eval={t_eval:.2f} ({t_eval/total_timed*100:.0f}%)", flush=True)
 
         # --- Evaluation ---
@@ -204,17 +281,38 @@ def main():
             _t = time.time()
             eval_rewards = evaluate(eval_env, agent, num_episodes=args.eval_episodes, deterministic=True)
             t_eval += time.time() - _t
-            mean_eval = np.mean(eval_rewards)
+            mean_eval = float(np.mean(eval_rewards))
             print(f"  >>> EVAL @ {total_steps} steps: mean={mean_eval:.3f} "
                   f"(episodes: {[f'{r:.2f}' for r in eval_rewards]})", flush=True)
+
+            if use_mlflow:
+                import mlflow
+                mlflow.log_metric('eval_reward', mean_eval, step=total_steps)
+                mlflow.log_metric('eta', agent.log_eta.exp().item(), step=total_steps)
+                mlflow.log_metric('lam_mu', agent.log_lam_mu.exp().item(), step=total_steps)
+                mlflow.log_metric('lam_sigma', agent.log_lam_sigma.exp().item(), step=total_steps)
+                if results:
+                    mlflow.log_metric('critic_loss', results.get('critic_loss', 0.0), step=total_steps)
+                    mlflow.log_metric('actor_loss', results.get('actor_loss', 0.0), step=total_steps)
+                    mlflow.log_metric('kl_mu', results.get('kl_mu', 0.0), step=total_steps)
+                    mlflow.log_metric('kl_sigma', results.get('kl_sigma', 0.0), step=total_steps)
+                mlflow.log_metric('fps', total_steps / (time.time() - t0), step=total_steps)
+
             if mean_eval > best_eval:
                 best_eval = mean_eval
-                agent.save(save_path)
+                agent.save(save_path, total_steps=total_steps, best_eval=best_eval)
                 print(f"      Saved best model -> {save_path}", flush=True)
 
     # Final save
-    agent.save(save_path)
+    agent.save(save_path, total_steps=total_steps, best_eval=best_eval)
     print(f"Training done. Final model saved -> {save_path}", flush=True)
+
+    if use_mlflow:
+        import mlflow
+        mlflow.log_metric('best_eval_reward', best_eval)
+        mlflow.end_run()
+
+    return best_eval
 
 
 if __name__ == '__main__':
