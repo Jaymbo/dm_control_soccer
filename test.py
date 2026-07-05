@@ -4,9 +4,17 @@ Usage:
     python test.py --domain cartpole --task balance
     python test.py --domain cartpole --task balance --no-viewer   # just print rewards
     python test.py --domain cartpole_ball --task kick             # custom env
+    python test.py --checkpoint checkpoints/mpo_cartpole_balance_trial3.pt
+
+If no --checkpoint is given, the script auto-discovers the best available:
+  1. Standard checkpoint: checkpoints/mpo_<domain>_<task>.pt
+  2. Best HPO trial via Optuna DB (optuna.db)
+  3. Best HPO trial by comparing best_eval in all trial checkpoints
 """
 import argparse
+import glob
 import os
+import re
 import sys
 import numpy as np
 import torch
@@ -66,6 +74,69 @@ def run_episode(env, agent, deterministic=True, render=False):
     return total_reward, steps
 
 
+def _find_best_checkpoint(domain, task):
+    """Auto-discover the best checkpoint for a domain/task.
+
+    Priority:
+      1. Standard checkpoint: checkpoints/mpo_<domain>_<task>.pt
+      2. Best HPO trial via Optuna DB (optuna.db)
+      3. Best HPO trial by comparing best_eval in checkpoint files
+    """
+    save_dir = 'checkpoints'
+    base_name = f'mpo_{domain}_{task}'
+    standard = os.path.join(save_dir, f'{base_name}.pt')
+
+    # 1. Standard checkpoint (from train.py without HPO)
+    if os.path.exists(standard):
+        return standard
+
+    # 2. Best trial via Optuna DB
+    optuna_db = 'sqlite:///optuna.db'
+    if os.path.exists('optuna.db'):
+        try:
+            import optuna
+            storage = optuna.storages.RDBStorage(
+                optuna_db,
+                engine_kwargs={'connect_args': {'timeout': 10}},
+            )
+            study = optuna.load_study(study_name='mpo_hpo', storage=storage)
+            best_trial = study.best_trial
+            best_path = os.path.join(save_dir, f'{base_name}_trial{best_trial.number}.pt')
+            if os.path.exists(best_path):
+                print(f"Auto-selected best HPO trial {best_trial.number} "
+                      f"(eval={best_trial.value:.3f}) from Optuna DB")
+                return best_path
+        except Exception:
+            pass  # Fall through to filesystem scan
+
+    # 3. Filesystem scan: load each trial checkpoint and compare best_eval
+    pattern = os.path.join(save_dir, f'{base_name}_trial*.pt')
+    trial_files = glob.glob(pattern)
+    if not trial_files:
+        return standard  # will fail with the standard error message
+
+    best_eval = -1e9
+    best_path = None
+    for f in trial_files:
+        try:
+            ckpt = torch.load(f, map_location='cpu', weights_only=False)
+            eval_val = ckpt.get('best_eval', -1e9)
+            if eval_val > best_eval:
+                best_eval = eval_val
+                best_path = f
+        except Exception:
+            continue
+
+    if best_path:
+        m = re.search(r'trial(\d+)', os.path.basename(best_path))
+        trial_num = m.group(1) if m else '?'
+        print(f"Auto-selected trial {trial_num} (best_eval={best_eval:.3f}) "
+              f"from {len(trial_files)} checkpoints")
+        return best_path
+
+    return standard
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--domain', type=str, default='cartpole')
@@ -90,7 +161,7 @@ def main():
     agent = MPO(obs_dim, act_dim, act_limit=act_limit, device=args.device)
 
     if args.checkpoint is None:
-        args.checkpoint = os.path.join('checkpoints', f'mpo_{args.domain}_{args.task}.pt')
+        args.checkpoint = _find_best_checkpoint(args.domain, args.task)
 
     if not os.path.exists(args.checkpoint):
         print(f"ERROR: No checkpoint found at {args.checkpoint}")
