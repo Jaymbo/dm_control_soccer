@@ -10,7 +10,7 @@
   <default>
     <default class="pole">
       <joint type="hinge" axis="0 1 0"  damping="2e-6"/>
-      <geom type="capsule" fromto="0 0 0 0 0 1" size="0.045" material="self" mass="5"/>
+      <geom type="capsule" fromto="0 0 0 0 0 1" size="0.045" material="self" mass="0.1"/>
     </default>
   </default>
 
@@ -33,7 +33,7 @@
     <!-- Ball -->
     <body name="ball" pos="1 0 0.15">
       <freejoint name="ball_joint"/>
-      <geom name="ball" type="sphere" size="0.2" rgba="0.8 0.2 0.2 1" mass="0.43"/>
+      <geom name="ball" type="sphere" size="0.2" rgba="0.8 0.2 0.2 1" mass="0.01"/>
     </body>
   </worldbody>
 

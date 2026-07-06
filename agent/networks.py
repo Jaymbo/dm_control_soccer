@@ -4,6 +4,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _init_weights(m):
+    """Orthogonal initialisation — standard for PPO stability."""
+    if isinstance(m, nn.Linear):
+        nn.init.orthogonal_(m.weight, gain=1.0)
+        nn.init.zeros_(m.bias)
+
+
+def _init_weights_small(m):
+    """Orthogonal init with small gain for output heads (stable start)."""
+    if isinstance(m, nn.Linear):
+        nn.init.orthogonal_(m.weight, gain=0.01)
+        nn.init.zeros_(m.bias)
+
+
 def mlp(sizes, activation=nn.Tanh, output_activation=None):
     layers = []
     for i in range(len(sizes) - 1):
@@ -11,7 +25,9 @@ def mlp(sizes, activation=nn.Tanh, output_activation=None):
         layers.append(nn.Linear(sizes[i], sizes[i + 1]))
         if act is not None:
             layers.append(act())
-    return nn.Sequential(*layers)
+    net = nn.Sequential(*layers)
+    net.apply(_init_weights)
+    return net
 
 
 class GaussianPolicy(nn.Module):
@@ -23,6 +39,9 @@ class GaussianPolicy(nn.Module):
         self.net = mlp([obs_dim] + list(hidden_sizes), activation=nn.Tanh)
         self.mean_head = nn.Linear(hidden_sizes[-1], act_dim)
         self.log_std_head = nn.Linear(hidden_sizes[-1], act_dim)
+        # Small-gain init for output heads → near-deterministic start
+        self.mean_head.apply(_init_weights_small)
+        self.log_std_head.apply(_init_weights_small)
 
     def forward(self, obs):
         h = self.net(obs)
@@ -74,3 +93,16 @@ class QNetwork(nn.Module):
     def forward(self, obs, action):
         sa = torch.cat([obs, action], dim=-1)
         return self.q1(sa).squeeze(-1), self.q2(sa).squeeze(-1)
+
+
+class ValueNetwork(nn.Module):
+    """State-value estimator V(s) for PPO / actor-critic."""
+
+    def __init__(self, obs_dim, hidden_sizes=(256, 256)):
+        super().__init__()
+        self.net = mlp([obs_dim] + list(hidden_sizes) + [1], activation=nn.Tanh)
+        # Small-gain init for value output → start near V=0
+        self.net[-1].apply(_init_weights_small)
+
+    def forward(self, obs):
+        return self.net(obs).squeeze(-1)

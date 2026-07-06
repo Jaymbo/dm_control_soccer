@@ -28,7 +28,7 @@ from lxml import etree
 import numpy as np
 
 
-_DEFAULT_TIME_LIMIT = 10
+_DEFAULT_TIME_LIMIT = 15
 SUITE = containers.TaggedTasks()
 FILE = 'cartpole_ball.xml'
 

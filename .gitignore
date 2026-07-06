@@ -9,3 +9,5 @@ optuna.db-journal
 checkpoints/
 .pytest_cache/
 hpo_logs/
+AGENTS.md
+.continue/*

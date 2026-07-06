@@ -43,10 +43,10 @@ def _fill_buffer(agent, n=200):
 # ---------------------------------------------------------------------------
 
 def test_agent_initialisation(agent):
-    """Dual variables should start at 1.0 (log=0) and entropy floor is log(K)-eps."""
+    """Dual variables start at expected values; entropy floor is log(K)-eps."""
     assert agent.log_eta.item() == 0.0
     assert agent.log_lam_mu.item() == 0.0
-    assert agent.log_lam_sigma.item() == 0.0
+    assert agent.log_lam_sigma.item() == 10.0
     assert agent.action_min_entropy == pytest.approx(np.log(10) - 0.1)
 
 
@@ -87,17 +87,21 @@ def test_critic_update_returns_loss(agent):
 
 
 def test_critic_target_uses_no_entropy_bonus(agent):
-    """Critic target should be r + gamma*(1-done)*min(Q1',Q2') without entropy."""
+    """Critic target should be r + gamma*(1-done)*mean_N(min(Q1',Q2')) without entropy."""
     _fill_buffer(agent, 200)
     batch = agent.buffer.sample_batch(8)
     obs2 = batch['obs2']
     rew = batch['rew']
     done = batch['done']
+    B = obs2.shape[0]
+    N = agent.K
 
     with torch.no_grad():
-        next_act, _, _ = agent.policy_target.sample(obs2)
-        q1_t, q2_t = agent.q_target(obs2, next_act)
-        expected_target = rew + 0.99 * (1 - done) * torch.min(q1_t, q2_t)
+        obs2_rep = obs2.unsqueeze(1).expand(-1, N, -1).reshape(B * N, -1)
+        next_act, _, _ = agent.policy_target.sample(obs2_rep)
+        q1_t, q2_t = agent.q_target(obs2_rep, next_act)
+        q_next = torch.min(q1_t, q2_t).reshape(B, N).mean(dim=1)
+        expected_target = rew + 0.99 * (1 - done) * q_next
 
     # Verify no entropy term is involved: target should match plain Bellman
     q1, q2 = agent.q(batch['obs'], batch['act'])
@@ -115,12 +119,12 @@ def test_critic_target_uses_no_entropy_bonus(agent):
 # ---------------------------------------------------------------------------
 
 def test_actor_update_returns_metrics(agent):
-    """Actor update should return 6 metrics: loss, KL_mu, KL_sigma, eta, lam_mu, lam_sigma."""
+    """Actor update returns 7 metrics: loss, KL_mu, KL_sigma, eta, lam_mu, lam_sigma, target_entropy."""
     _fill_buffer(agent, 200)
     batch = agent.buffer.sample_batch(16)
     result = agent.update_actor(batch)
-    assert len(result) == 6
-    a_loss, c_mu, c_sigma, eta, lam_mu, lam_sigma = result
+    assert len(result) == 7
+    a_loss, c_mu, c_sigma, eta, lam_mu, lam_sigma, t_ent = result
     assert np.isfinite(a_loss)
     assert c_mu >= 0  # KL is non-negative
     assert c_sigma >= 0
@@ -135,22 +139,22 @@ def test_dual_variables_update_on_constraint_violation(agent):
 
     # Set very tight eps_mu so C_mu likely exceeds it
     agent.eps_mu = 0.0
-    log_lam_before = agent.log_lam_mu.item()
+    lam_mu_before = torch.nn.functional.softplus(agent.log_lam_mu).item()
 
     batch = agent.buffer.sample_batch(16)
     agent.update_actor(batch)
 
-    log_lam_after = agent.log_lam_mu.item()
+    lam_mu_after = torch.nn.functional.softplus(agent.log_lam_mu).item()
     # With eps_mu=0, any positive C_mu should increase lambda
-    assert log_lam_after >= log_lam_before
+    assert lam_mu_after >= lam_mu_before
 
 
 # ---------------------------------------------------------------------------
 # Target network update
 # ---------------------------------------------------------------------------
 
-def test_target_update_polyak(agent):
-    """After update_targets, target params should move toward main params."""
+def test_target_update_hard_copy(agent):
+    """After update_targets, target params should equal main params (hard copy)."""
     _fill_buffer(agent, 100)
 
     # Get a parameter from q and q_target before update
@@ -166,10 +170,8 @@ def test_target_update_polyak(agent):
     qt_param_after = list(agent.q_target.parameters())[0].data
     # Target should have moved (not equal to before)
     assert not torch.allclose(qt_param_before, qt_param_after)
-    # Target should be between old target and new q
-    polyak = 0.995
-    expected = polyak * qt_param_before + (1 - polyak) * q_param.data
-    torch.testing.assert_close(qt_param_after, expected, atol=1e-6, rtol=1e-6)
+    # Hard copy: target should exactly match the new q
+    torch.testing.assert_close(qt_param_after, q_param.data, atol=1e-6, rtol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -201,9 +203,10 @@ def test_save_load_roundtrip(tmp_path, agent):
     agent.update(batch_size=16, num_critic_updates=2, num_actor_updates=2)
 
     # Modify dual variables
-    agent.log_eta.fill_(0.5)
-    agent.log_lam_mu.fill_(-0.3)
-    agent.log_lam_sigma.fill_(0.7)
+    with torch.no_grad():
+        agent.log_eta.fill_(0.5)
+        agent.log_lam_mu.fill_(-0.3)
+        agent.log_lam_sigma.fill_(0.7)
 
     save_path = str(tmp_path / 'test_ckpt.pt')
     agent.save(save_path, total_steps=12345, best_eval=42.0, final_eval=38.5)

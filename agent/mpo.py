@@ -10,7 +10,7 @@ Implementation following the paper:
   - M-step: update policy to minimise weighted NLL under target distribution
     plus Lagrangian KL(π_old ‖ π_new) penalty with **decoupled** multipliers
     λ_μ (mean) and λ_Σ (covariance), as per Appendix D.3 of the paper.
-    ε_μ = 0.1, ε_Σ = 0.0001 (very tight to prevent entropy collapse).
+    ε_μ = 0.001, ε_Σ = 1e-6 (tight to prevent entropy collapse).
 
 Designed for dm_control environments with 1-D dict observations.
 """
@@ -32,13 +32,13 @@ class MPO:
         device='cpu',
         gamma=0.99,
         polyak=0.995,
-        critic_lr=5e-4,
-        actor_lr=5e-4,
+        critic_lr=1e-4,
+        actor_lr=1e-4,
         num_action_samples=20,
         eps_eta=0.1,
-        eps_mu=0.1,
-        eps_sigma=0.0001,
-        dual_lr=0.001,
+        eps_mu=0.001,
+        eps_sigma=1e-6,
+        dual_lr=0.01,
         hidden_sizes=(256, 256),
     ):
         self.device = torch.device(device)
@@ -66,13 +66,19 @@ class MPO:
         self.policy_optim = torch.optim.Adam(self.policy.parameters(), lr=actor_lr)
         self.q_optim = torch.optim.Adam(self.q.parameters(), lr=critic_lr)
 
-        # Dual variables (multiplicative update in log-space, cf. paper Eq. 9 & D.3)
+        # Dual variables — optimised via Lagrangian dual loss + Adam (paper
+        # Algorithm 2, lines 16 & 19: δη = ∂_η g(η), [δη_μ, δη_Σ] = α ∂L).
+        # Stored as raw parameters; actual values = softplus(param) to
+        # guarantee positivity without explicit exp (task 7).
         # eta: E-step temperature (dual descent on KL constraint)
-        self.log_eta = torch.tensor(0.0, device=self.device)
+        self.log_eta = torch.tensor(0.0, device=self.device, requires_grad=True)
         # lambda_mu: M-step Lagrange multiplier for mean KL constraint
-        self.log_lam_mu = torch.tensor(0.0, device=self.device)
+        self.log_lam_mu = torch.tensor(0.0, device=self.device, requires_grad=True)
         # lambda_sigma: M-step Lagrange multiplier for covariance KL constraint
-        self.log_lam_sigma = torch.tensor(0.0, device=self.device)
+        self.log_lam_sigma = torch.tensor(10.0, device=self.device, requires_grad=True)
+        self.dual_optim = torch.optim.SGD(
+            [self.log_eta, self.log_lam_mu, self.log_lam_sigma], lr=dual_lr,
+        )
 
         self.buffer = ReplayBuffer(obs_dim, act_dim, size=200000, device=self.device)
 
@@ -105,20 +111,29 @@ class MPO:
     def update_critic(self, batch):
         """Unregularised Q-learning (paper Eq. 5: no SAC entropy bonus).
 
-        Target: r + γ (1 - done) * min(Q1', Q2')
-        Next actions sampled from the **target** policy (for TD target).
+        Target: r + γ (1 - done) * mean_over_N_a'[ min(Q1'(s',a'), Q2'(s',a')) ]
+        Instead of a single next-action sample, we sample N actions from the
+        target policy and average the twin-Q min, giving a lower-variance
+        estimate of V(s') = E_a'[Q(s',a')] (cf. paper Algorithm 2 line 11
+        which uses multiple samples for integral estimation).
         """
         obs, obs2, act, rew, done = batch['obs'], batch['obs2'], batch['act'], batch['rew'], batch['done']
+        B = obs2.shape[0]
 
         with torch.no_grad():
-            next_act, _, _ = self.policy_target.sample(obs2)
-            q1_t, q2_t = self.q_target(obs2, next_act)
-            q_target = rew + self.gamma * (1 - done) * torch.min(q1_t, q2_t)
+            # Sample N next actions per state from the target policy
+            N = self.K
+            obs2_rep = obs2.unsqueeze(1).expand(-1, N, -1).reshape(B * N, -1)
+            next_act, _, _ = self.policy_target.sample(obs2_rep)
+            q1_t, q2_t = self.q_target(obs2_rep, next_act)
+            q_next = torch.min(q1_t, q2_t).reshape(B, N).mean(dim=1)
+            q_target = rew + self.gamma * (1 - done) * q_next
 
         q1, q2 = self.q(obs, act)
         critic_loss = F.mse_loss(q1, q_target) + F.mse_loss(q2, q_target)
         self.q_optim.zero_grad()
         critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.q.parameters(), max_norm=40.0)
         self.q_optim.step()
         return critic_loss.item()
 
@@ -134,16 +149,21 @@ class MPO:
         obs_rep = obs.unsqueeze(1).expand(-1, self.K, -1).reshape(B * self.K, -1)
 
         with torch.no_grad():
-            # Sample K actions per state from current (old) policy
-            mean, log_std = self.policy(obs_rep)
+            # Sample K actions per state from target (old) policy π(·|s, θi)
+            # (paper Algorithm 2, line 11: "sample M additional actions ...
+            #  from π(a|s, θi)")
+            mean, log_std = self.policy_target(obs_rep)
             std = log_std.exp()
             dist = torch.distributions.Normal(mean, std)
             x_pre = dist.rsample()                      # pre-tanh
             actions = torch.tanh(x_pre) * self.policy.act_limit
-            q1, q2 = self.q(obs_rep, actions)
+            # Use target Q-networks for stable target weights (paper uses
+            # Q-target, not the online Q, to avoid positive feedback loops
+            # where a moving Q distorts the target distribution).
+            q1, q2 = self.q_target(obs_rep, actions)
             q_vals = torch.min(q1, q2).reshape(B, self.K)
 
-        eta = self.log_eta.exp()
+        eta = F.softplus(self.log_eta)
         # Target distribution q(a|s) ∝ exp(Q/eta)
         logits = q_vals / (eta + 1e-8)
         weights = torch.softmax(logits, dim=-1)          # [B, K]
@@ -191,56 +211,79 @@ class MPO:
             mean_old, log_std_old = self.policy_target(obs_rep)
             std_old = log_std_old.exp()
 
-        C_mu = 0.5 * (((mean_new - mean_old) / std_new) ** 2).sum(-1).mean()
+        # Mean-part KL: denominator uses the *old* (target) scale, not the
+        # new one.  This follows reference MPO implementations (e.g. Acme)
+        # where the mean displacement is measured relative to the old
+        # distribution's scale.
+        C_mu = 0.5 * (((mean_new - mean_old) / std_old) ** 2).sum(-1).mean()
         C_sigma = 0.5 * ((std_old / std_new) ** 2 - 1
                          + 2 * (log_std_new - log_std_old)).sum(-1).mean()
 
-        lam_mu = self.log_lam_mu.exp()
-        lam_sigma = self.log_lam_sigma.exp()
+        lam_mu = F.softplus(self.log_lam_mu)
+        lam_sigma = F.softplus(self.log_lam_sigma)
         kl_loss = lam_mu.detach() * C_mu + lam_sigma.detach() * C_sigma
 
         actor_loss = nll_loss + kl_loss
 
         self.policy_optim.zero_grad()
         actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=40.0)
         self.policy_optim.step()
 
         # --- Measure KL components AFTER the policy update ---
         with torch.no_grad():
             mean_new2, log_std_new2 = self.policy(obs_rep)
             std_new2 = log_std_new2.exp()
-            C_mu_after = 0.5 * (((mean_new2 - mean_old) / std_new2) ** 2).sum(-1).mean()
+            C_mu_after = 0.5 * (((mean_new2 - mean_old) / std_old) ** 2).sum(-1).mean()
             C_sigma_after = 0.5 * ((std_old / std_new2) ** 2 - 1
                                    + 2 * (log_std_new2 - log_std_old)).sum(-1).mean()
 
-        # --- Dual updates (multiplicative in log-space) ---
-        # eta:     entropy(q) must stay ≥ log(K) - ε  →  increase η when too low
-        # λ_μ:     C_μ must stay ≤ ε_μ               →  increase λ_μ when exceeded
-        # λ_Σ:     C_Σ must stay ≤ ε_Σ               →  increase λ_Σ when exceeded
+        # --- Dual variable updates via Lagrangian dual loss + Adam ---
+        # E-step dual (paper Eq. 9): minimise g(η) where
+        #   ∂g/∂η = ε - KL(q‖π) = H(q) - (log K - ε) = entropy - action_min_entropy
+        # M-step dual (paper D.3): minimise λ_μ(ε_μ - C_μ) + λ_Σ(ε_Σ - C_Σ)
+        # When a constraint is violated (C > ε), the gradient is negative,
+        # so gradient descent increases the multiplier.  Correct behaviour.
+        eta_val = F.softplus(self.log_eta)
+        lam_mu_val = F.softplus(self.log_lam_mu)
+        lam_sigma_val = F.softplus(self.log_lam_sigma)
+
+        dual_loss = eta_val * (target_entropy.detach() - self.action_min_entropy) \
+                    + lam_mu_val * (self.eps_mu - C_mu_after.detach()) \
+                    + lam_sigma_val * (self.eps_sigma - C_sigma_after.detach())
+
+        self.dual_optim.zero_grad()
+        dual_loss.backward()
+        self.dual_optim.step()
+
+        # Lower-bound only (task 11): prevent collapse to negative regime
         with torch.no_grad():
-            self.log_eta += self.dual_lr * (self.action_min_entropy - target_entropy)
-            self.log_eta.clamp_(-5, 5)
-
-            self.log_lam_mu += self.dual_lr * (C_mu_after - self.eps_mu)
-            self.log_lam_mu.clamp_(-3, 3)
-
-            self.log_lam_sigma += self.dual_lr * (C_sigma_after - self.eps_sigma)
-            self.log_lam_sigma.clamp_(-3, 3)
+            self.log_eta.clamp_(min=-18.0)
+            self.log_lam_mu.clamp_(min=-18.0)
+            self.log_lam_sigma.clamp_(min=-18.0)
 
         return (actor_loss.item(), C_mu_after.item(), C_sigma_after.item(),
-                self.log_eta.exp().item(),
-                self.log_lam_mu.exp().item(),
-                self.log_lam_sigma.exp().item())
+                F.softplus(self.log_eta).item(),
+                F.softplus(self.log_lam_mu).item(),
+                F.softplus(self.log_lam_sigma).item(),
+                target_entropy.item())
 
     # ------------------------------------------------------------------
     # Target network update
     # ------------------------------------------------------------------
     def update_targets(self):
+        """Hard-copy online networks to targets (paper Algorithm 2).
+
+        MPO uses hard target copies, not Polyak averaging.  The old policy
+        π_old for the KL constraint must be the policy from the *previous*
+        iteration, not a running average.  Similarly, Q-target should reflect
+        the current Q after each update round.
+        """
         with torch.no_grad():
             for p, p_t in zip(self.q.parameters(), self.q_target.parameters()):
-                p_t.data.mul_(self.polyak).add_(p.data, alpha=1 - self.polyak)
+                p_t.data.copy_(p.data)
             for p, p_t in zip(self.policy.parameters(), self.policy_target.parameters()):
-                p_t.data.mul_(self.polyak).add_(p.data, alpha=1 - self.polyak)
+                p_t.data.copy_(p.data)
 
     # ------------------------------------------------------------------
     # Full update step
@@ -256,10 +299,11 @@ class MPO:
             results['critic_loss'] = self.update_critic(batch)
         for _ in range(num_actor_updates):
             batch = self.buffer.sample_batch(batch_size)
-            a_loss, c_mu, c_sigma, eta, lam_mu, lam_sigma = self.update_actor(batch)
+            a_loss, c_mu, c_sigma, eta, lam_mu, lam_sigma, t_ent = self.update_actor(batch)
             results.update(dict(
                 actor_loss=a_loss, kl_mu=c_mu, kl_sigma=c_sigma,
                 eta=eta, lam_mu=lam_mu, lam_sigma=lam_sigma,
+                target_entropy=t_ent,
             ))
         self.update_targets()
         return results
@@ -297,9 +341,9 @@ class MPO:
         self.q_target.load_state_dict(ckpt['q_target'])
         self.policy_target.load_state_dict(ckpt['policy_target'])
         with torch.no_grad():
-            self.log_eta.fill_(ckpt['log_eta'])
-            self.log_lam_mu.fill_(ckpt['log_lam_mu'])
-            self.log_lam_sigma.fill_(ckpt['log_lam_sigma'])
+            self.log_eta.copy_(ckpt['log_eta'])
+            self.log_lam_mu.copy_(ckpt['log_lam_mu'])
+            self.log_lam_sigma.copy_(ckpt['log_lam_sigma'])
         if 'replay_buffer' in ckpt:
             self.buffer.load_state_dict(ckpt['replay_buffer'])
         total_steps = ckpt.get('total_steps', 0)
