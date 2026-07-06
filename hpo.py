@@ -1,13 +1,22 @@
 """Hyperparameter Optimisation for MPO using Optuna + MLflow.
 
 Each trial runs a short training and logs metrics to MLflow.
-Optuna uses the **final eval reward** (robust mean over 10 episodes)
-as optimisation objective — not the best intermediate eval.
+Optuna uses the **penalised final eval reward** as objective:
+
+    objective = final_eval_reward - step_penalty * (total_steps / 1000)
+
+This encourages the search to prefer trials that reach good performance
+in fewer steps.  Intermediate eval results are reported to Optuna for
+pruning (MedianPruner), so trials that lag behind are killed early.
+
+The number of training steps per trial is itself sampled (log-uniform)
+between --min_steps and --steps (upper bound).
 
 Usage:
-    python hpo.py --trials 20 --steps 20000
+    python hpo.py --trials 20 --steps 50000
     python hpo.py --trials 0 --steps 50000          # endless until Ctrl+C
     python hpo.py --domain cartpole --task swingup   # different env
+    python hpo.py --steps 50000 --step_penalty 2.0   # stronger time penalty
 
 After HPO, view results in two dashboards:
     MLflow (metrics per trial):   mlflow ui --backend-store-uri sqlite:///mlflow.db
@@ -39,8 +48,15 @@ def build_parser():
     p = argparse.ArgumentParser()
     p.add_argument('--trials', type=int, default=20,
                    help='Number of Optuna trials (0 = unlimited, run until Ctrl+C)')
-    p.add_argument('--steps', type=int, default=20000,
-                   help='Training steps per trial')
+    p.add_argument('--steps', type=int, default=50000,
+                   help='Max training steps per trial (upper bound for sampling)')
+    p.add_argument('--min_steps', type=int, default=1000,
+                   help='Min training steps per trial (lower bound for sampling)')
+    p.add_argument('--eval_every', type=int, default=1000,
+                   help='Eval interval (steps) for intermediate pruning signals')
+    p.add_argument('--step_penalty', type=float, default=5.0,
+                   help='Penalty per 1000 steps subtracted from objective '
+                        '(encourages fewer steps)')
     p.add_argument('--domain', type=str, default='cartpole')
     p.add_argument('--task', type=str, default='balance')
     p.add_argument('--study_name', type=str, default='mpo_hpo')
@@ -72,15 +88,22 @@ def make_objective(args):
             'polyak': trial.suggest_float('polyak', 0.99, 0.999),
         }
 
+        # Sample total steps (log-uniform) — the optimiser can explore
+        # short and long training runs.  The step_penalty in the objective
+        # discourages unnecessarily long trials.
+        trial_steps = trial.suggest_int(
+            'steps', args.min_steps, args.steps, log=True
+        )
+
         # Build CLI args for train.py
         cmd = [
             sys.executable, os.path.join(os.path.dirname(__file__), 'train.py'),
             '--domain', args.domain,
             '--task', args.task,
-            '--steps', str(args.steps),
+            '--steps', str(trial_steps),
             '--seed', str(args.seed + trial.number),
-            '--eval_every', str(args.steps // 4),  # 4 evals per trial
-            '--print_every', str(args.steps),       # print once at end
+            '--eval_every', str(args.eval_every),
+            '--print_every', str(trial_steps),       # print once at end
             '--no-resume',                           # HPO trials start fresh
             '--checkpoint_tag', f'trial{trial.number}',  # unique ckpt per trial
         ]
@@ -91,33 +114,83 @@ def make_objective(args):
         for k, v in hp.items():
             cmd += [f'--{k}', str(v)]
 
-        # Run training as subprocess (clean process each trial)
+        # Run training as subprocess (clean process each trial).
+        # We read stdout line-by-line so we can parse intermediate EVAL
+        # results and report them to Optuna for pruning decisions.
+        # The penalty is applied to intermediate values too, so that
+        # pruning decisions account for the time cost.
         print(f"\n{'='*60}")
-        print(f"Trial {trial.number} | steps={args.steps} | params: {hp}")
+        print(f"Trial {trial.number} | steps={trial_steps} | eval_every={args.eval_every} | "
+              f"step_penalty={args.step_penalty} | params: {hp}")
         print(f"{'='*60}")
 
-        result = subprocess.run(cmd, capture_output=True, text=True,
-                                cwd=os.path.dirname(os.path.abspath(__file__)))
-        print(result.stdout[-500:] if len(result.stdout) > 500 else result.stdout)
-        if result.returncode != 0:
-            print(f"STDERR: {result.stderr[-500:]}")
-            return -1e9
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
 
-        # Parse FINAL_EVAL (robust final evaluation, not best intermediate)
+        eval_step = 0
         final_eval = -1e9
-        for line in result.stdout.splitlines():
+
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                print(line, flush=True)
+
+            # Parse intermediate EVAL lines and report to Optuna.
+            # We apply the step penalty to the intermediate value so that
+            # the pruner sees the penalised objective, consistent with the
+            # final objective calculation.
+            if 'EVAL @' in line and 'mean=' in line:
+                try:
+                    mean_val = float(line.split('mean=')[1].split()[0])
+                    # Extract step count from "EVAL @ <N> steps"
+                    eval_at_steps = int(line.split('EVAL @')[1].split('steps')[0].strip())
+                except (ValueError, IndexError):
+                    continue
+                eval_step += 1
+                penalised = mean_val - args.step_penalty * (eval_at_steps / 1000)
+                trial.report(penalised, step=eval_step)
+                if trial.should_prune():
+                    proc.kill()
+                    proc.wait()
+                    raise optuna.TrialPruned(
+                        f"Pruned at eval_step={eval_step} "
+                        f"(raw={mean_val:.3f}, penalised={penalised:.3f}, "
+                        f"steps={eval_at_steps})"
+                    )
+
+            # Parse FINAL_EVAL
             if 'FINAL_EVAL' in line and 'mean=' in line:
                 try:
                     final_eval = float(line.split('mean=')[1].split()[0])
                 except (ValueError, IndexError):
                     pass
 
-        # Store steps as trial metadata for cross-run comparison
-        trial.set_user_attr('steps', args.steps)
-        trial.set_user_attr('final_eval', final_eval)
+        proc.wait()
+        stderr_output = proc.stderr.read() if proc.stderr else ''
+        if proc.returncode != 0:
+            print(f"STDERR: {stderr_output[-500:]}")
+            return -1e9
 
-        print(f"Trial {trial.number} final_eval = {final_eval:.3f} (steps={args.steps})")
-        return final_eval
+        # Penalised objective: reward minus time cost
+        penalty = args.step_penalty * (trial_steps / 1000)
+        objective_value = final_eval - penalty
+
+        # Store metadata for cross-run comparison
+        trial.set_user_attr('steps', trial_steps)
+        trial.set_user_attr('final_eval', final_eval)
+        trial.set_user_attr('penalty', penalty)
+        trial.set_user_attr('objective_value', objective_value)
+
+        print(f"Trial {trial.number} | final_eval={final_eval:.3f} | "
+              f"penalty={penalty:.3f} | objective={objective_value:.3f} "
+              f"(steps={trial_steps})")
+        return objective_value
 
     return objective
 
@@ -164,6 +237,14 @@ def main():
         # Vary sampler seed per worker (PID) so parallel workers explore
         # different regions. --seed is still used for training reproducibility.
         sampler=optuna.samplers.TPESampler(seed=args.seed + os.getpid()),
+        # Prune trials that perform poorly compared to median of completed
+        # trials at the same intermediate step.  Needs at least
+        # n_warmup_steps completed trials and n_min_trials reported
+        # intermediate values before pruning kicks in.
+        pruner=optuna.pruners.MedianPruner(
+            n_startup_trials=5,
+            n_warmup_steps=2,
+        ),
         load_if_exists=True,
     )
 
@@ -173,9 +254,12 @@ def main():
     if n_trials is None:
         print("Running unlimited HPO. Press Ctrl+C to stop.\n")
 
-    # Use MLflow pruning callback (optional — requires mlflow-optuna integration)
+    # Use MLflow callback from optuna.integration (logs trial params/metrics
+    # to MLflow automatically).  Pruning is handled by the MedianPruner
+    # configured above via trial.report() / trial.should_prune() in the
+    # objective function.
     try:
-        from mlflow_optuna import MLflowCallback
+        from optuna.integration.mlflow import MLflowCallback
         mlflow_callback = MLflowCallback(
             tracking_uri=mlflow_uri,
             metric_name='final_eval_reward',
@@ -183,15 +267,20 @@ def main():
         study.optimize(objective, n_trials=n_trials,
                        callbacks=[mlflow_callback])
     except ImportError:
-        # Fall back without MLflow pruning callback
-        print("mlflow-optuna not installed, running without pruning callback")
+        # Fall back without MLflow callback
+        print("optuna.integration.mlflow not available, "
+              "running without MLflow callback")
         study.optimize(objective, n_trials=n_trials)
 
     print("\n" + "=" * 60)
     print("HPO COMPLETE")
     print("=" * 60)
-    print(f"Best trial value: {study.best_value:.3f}")
-    print(f"Best params: {study.best_params}")
+    print(f"Best trial value (penalised): {study.best_value:.3f}")
+    best = study.best_trial
+    print(f"  final_eval:  {best.user_attrs.get('final_eval', '?'):.3f}")
+    print(f"  steps:       {best.user_attrs.get('steps', '?')}")
+    print(f"  penalty:     {best.user_attrs.get('penalty', '?'):.3f}")
+    print(f"  params:      {best.params}")
     print(f"\nView results:")
     print(f"  MLflow:   mlflow ui --backend-store-uri {args.mlflow_tracking_uri}")
     print(f"  Optuna:   optuna-dashboard {args.optuna_storage}")
