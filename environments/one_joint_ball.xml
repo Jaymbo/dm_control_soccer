@@ -1,4 +1,4 @@
-<mujoco model="cart-pole">
+<mujoco model="one_joint_ball">
   <include file="./common/skybox.xml"/>
   <include file="./common/visual.xml"/>
   <include file="./common/materials.xml"/>
@@ -35,6 +35,6 @@
   </worldbody>
 
   <actuator>
-    <motor name="kne" joint="knee" gear="10" ctrllimited="true" ctrlrange="-1 1" />
+    <motor name="knee" joint="knee" gear="10" ctrllimited="true" ctrlrange="-1 1" />
   </actuator>
 </mujoco>

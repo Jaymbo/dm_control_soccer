@@ -1,4 +1,4 @@
-<mujoco model="cart-pole">
+<mujoco model="cartpole_ball">
   <include file="./common/skybox.xml"/>
   <include file="./common/visual.xml"/>
   <include file="./common/materials.xml"/>

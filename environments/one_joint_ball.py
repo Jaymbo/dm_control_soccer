@@ -23,8 +23,6 @@ from dm_control.rl import control
 from dm_control.suite import base
 from dm_control.suite import common
 from dm_control.utils import containers
-from dm_control.utils import rewards
-from lxml import etree
 import numpy as np
 
 
@@ -33,7 +31,7 @@ SUITE = containers.TaggedTasks()
 FILE = 'one_joint_ball.xml'
 
 
-def get_model_and_assets(num_poles=1):
+def get_model_and_assets():
   """Returns a tuple containing the model XML string and a dict of assets."""
   xml_path = os.path.join(os.path.dirname(__file__), FILE)
   with open(xml_path, 'r') as f:
@@ -53,7 +51,7 @@ def kick(time_limit=_DEFAULT_TIME_LIMIT, random=None,
       physics, task, time_limit=time_limit, **environment_kwargs)
 
 class Physics(mujoco.Physics):
-  """Physics simulation with additional features for the Cartpole domain."""
+  """Physics simulation with additional features for the one_joint_ball domain."""
 
   def angular_vel(self):
     """Returns the angular velocity of the pole."""
@@ -61,12 +59,7 @@ class Physics(mujoco.Physics):
 
   def pole_angle_cosine(self):
     """Returns the cosine of the pole angle."""
-    return self.named.data.xmat[2:, 'zz']
-
-  def bounded_position(self):
-    """Returns the state, with pole angle split into sin/cos."""
-    return np.hstack((self.cart_position(),
-                      self.named.data.xmat[2:, ['zz', 'xz']].ravel()))
+    return self.named.data.xmat['lower_leg', 'zz']
 
   def ball_position(self):
     """Returns the [x, y, z] position of the ball."""
@@ -81,8 +74,6 @@ class Kick(base.Task):
   State is initialized either close to the target configuration or at a random
   configuration.
   """
-  _ANGLE_COSINE_RANGE = (.995, 1)
-
   def __init__(self, random=None):
     """Initializes an instance of `Kick`.
 
@@ -106,7 +97,7 @@ class Kick(base.Task):
     """Returns an observation of the (bounded) physics state."""
     obs = collections.OrderedDict()
     # Pole: angle (cos/sin) and angular velocity
-    obs['pole_angle'] = np.array([physics.pole_angle_cosine()[0],
+    obs['pole_angle'] = np.array([physics.pole_angle_cosine(),
                                   physics.named.data.xmat['lower_leg', 'xz']])
     obs['pole_velocity'] = np.array([physics.named.data.qvel['knee'][0]])
     # Ball: position and velocity
