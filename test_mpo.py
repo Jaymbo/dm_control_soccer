@@ -141,10 +141,35 @@ def _find_best_checkpoint(domain, task):
     return standard
 
 
+def _infer_domain_task(checkpoint_path):
+    """Infer domain/task from checkpoint filename: mpo_<domain>_<task>.pt or mpo_<domain>_<task>_trialN.pt."""
+    name = os.path.basename(checkpoint_path)
+    # Strip prefix (mpo_) and suffix (.pt or _trialN.pt)
+    name = name.replace('.pt', '')
+    name = re.sub(r'_trial\d+$', '', name)
+    prefix = 'mpo_'
+    if name.startswith(prefix):
+        name = name[len(prefix):]
+    # domain can contain underscores (e.g. cartpole_ball), task usually doesn't
+    # Try known domains first
+    known_domains = ['cartpole_ball', 'one_joint_ball', 'cartpole', 'cheetah', 'hopper',
+                    'walker', 'pendulum', 'fish', 'humanoid', 'point_mass', 'reacher',
+                    'finger', 'manipulator', 'acrobot', 'ball_in_cup', 'humanoid_CMU', 'lqr']
+    for d in known_domains:
+        if name.startswith(d + '_'):
+            task = name[len(d) + 1:]
+            return d, task
+    # Fallback: split on last underscore
+    parts = name.rsplit('_', 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return None, None
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--domain', type=str, default='cartpole')
-    parser.add_argument('--task', type=str, default='balance')
+    parser.add_argument('--domain', type=str, default=None)
+    parser.add_argument('--task', type=str, default=None)
     parser.add_argument('--checkpoint', type=str, default=None,
                         help='Path to .pt file. Default: checkpoints/mpo_<domain>_<task>.pt')
     parser.add_argument('--episodes', type=int, default=5)
@@ -156,6 +181,23 @@ def main():
     parser.add_argument('--device', type=str, default='cpu')
     args = parser.parse_args()
 
+    if args.checkpoint is None:
+        if args.domain is None or args.task is None:
+            print("ERROR: Please specify either --checkpoint or both --domain and --task.")
+            sys.exit(1)
+        args.checkpoint = _find_best_checkpoint(args.domain, args.task)
+
+    # Infer domain/task from checkpoint if not explicitly provided
+    if args.domain is None or args.task is None:
+        inferred_domain, inferred_task = _infer_domain_task(args.checkpoint)
+        if args.domain is None:
+            args.domain = inferred_domain
+        if args.task is None:
+            args.task = inferred_task
+        if args.domain is None or args.task is None:
+            print("ERROR: Could not infer domain/task. Please specify --domain and --task explicitly.")
+            sys.exit(1)
+
     env = make_env(args.domain, args.task)
 
     obs_dim = get_obs_dim(env)
@@ -163,9 +205,6 @@ def main():
     act_limit = get_act_limit(env)
 
     agent = MPO(obs_dim, act_dim, act_limit=act_limit, device=args.device)
-
-    if args.checkpoint is None:
-        args.checkpoint = _find_best_checkpoint(args.domain, args.task)
 
     if not os.path.exists(args.checkpoint):
         print(f"ERROR: No checkpoint found at {args.checkpoint}")

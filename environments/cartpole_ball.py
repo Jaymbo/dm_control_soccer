@@ -98,6 +98,14 @@ class Physics(mujoco.Physics):
     return np.hstack((self.cart_position(),
                       self.named.data.xmat[2:, ['zz', 'xz']].ravel()))
 
+  def ball_position(self):
+    """Returns the [x, y, z] position of the ball."""
+    return np.array(self.named.data.qpos['ball_joint'][:3])
+
+  def ball_velocity(self):
+    """Returns the [vx, vy, vz, wx, wy, wz] velocity of the ball."""
+    return np.array(self.named.data.qvel['ball_joint'])
+
 
 class Kick(base.Task):
   """A Cartpole_ball `Task` to kick the ball.
@@ -132,13 +140,41 @@ class Kick(base.Task):
   def get_observation(self, physics):
     """Returns an observation of the (bounded) physics state."""
     obs = collections.OrderedDict()
-    obs['position'] = physics.bounded_position()
-    obs['velocity'] = physics.velocity()
+    # Cart: position (x) and velocity (vx)
+    obs['cart_position'] = np.array([physics.cart_position()])
+    obs['cart_velocity'] = np.array([physics.named.data.qvel['slider'][0]])
+    # Pole: angle (cos/sin) and angular velocity
+    obs['pole_angle'] = np.array([physics.pole_angle_cosine()[0],
+                                  physics.named.data.xmat['lower_leg', 'xz']])
+    obs['pole_velocity'] = np.array([physics.named.data.qvel['knee'][0]])
+    # Ball: position and velocity
+    obs['ball_position'] = physics.ball_position()
+    obs['ball_velocity'] = physics.ball_velocity()[:3]   # linear vx, vy, vz
     return obs
 
   def get_reward(self, physics):
-    """Returns the reward based on the ball's velocity in x-direction."""
-    # qvel for a free joint: [vx, vy, vz, wx, wy, wz]
-    ball_vel_x = physics.named.data.qvel['ball_joint'][0]
-    # print(f'Reward (ball_vel_x): {ball_vel_x}')
-    return ball_vel_x
+    """Dense, bounded reward: approach ball + kick it far.
+
+    All components are bounded to keep the reward scale stable:
+      1. Ball x-velocity (primary: kick ball in +x), tanh-bounded to [-1, 1]
+      2. Cart-to-ball proximity (shaping: reward getting close), [0, 1]
+      3. Ball x-displacement from start (reward kicking far), tanh-bounded
+    """
+    ball_pos = physics.ball_position()
+    ball_vel = physics.ball_velocity()
+    cart_pos = physics.cart_position()
+
+    # 1. Ball velocity in x-direction (main kick reward), bounded
+    ball_vel_x = float(ball_vel[0])
+    vel_reward = np.tanh(ball_vel_x / 10.0)  # bounded to [-1, 1]
+
+    # 2. Proximity reward: closer cart -> higher reward
+    #    Cart needs to be at ball_x - 0.4 (cart_half=0.2 + ball_radius=0.2)
+    dist_to_ball = abs(float(ball_pos[0]) - 0.4 - cart_pos)
+    proximity = np.exp(-2.0 * dist_to_ball)
+
+    # 3. Ball displacement from initial position (x=1.0), bounded
+    ball_displacement = max(0.0, float(ball_pos[0]) - 1.0)
+    disp_reward = np.tanh(ball_displacement / 5.0)  # bounded to [0, 1)
+
+    return float(vel_reward + 0.1 * proximity + disp_reward)

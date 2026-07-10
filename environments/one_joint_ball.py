@@ -13,7 +13,7 @@
 # limitations under the License.
 # ============================================================================
 
-"""Cartpole_ball domain."""
+"""one_joint_ball domain."""
 
 import collections
 import os
@@ -54,7 +54,7 @@ def kick(time_limit=_DEFAULT_TIME_LIMIT, random=None,
 
 
 def _make_model(n_poles):
-  """Generates an xml string defining a cart with `n_poles` bodies."""
+  """Generates an xml string defining a leg with `n_poles` bodies."""
   xml_string = common.read_model(FILE)
   if n_poles == 1:
     return xml_string
@@ -78,12 +78,7 @@ def _make_model(n_poles):
   return etree.tostring(mjcf, pretty_print=True)
 
 
-class Physics(mujoco.Physics):
   """Physics simulation with additional features for the Cartpole domain."""
-
-  def cart_position(self):
-    """Returns the position of the cart."""
-    return self.named.data.qpos['slider'][0]
 
   def angular_vel(self):
     """Returns the angular velocity of the pole."""
@@ -98,14 +93,19 @@ class Physics(mujoco.Physics):
     return np.hstack((self.cart_position(),
                       self.named.data.xmat[2:, ['zz', 'xz']].ravel()))
 
+  def ball_position(self):
+    """Returns the [x, y, z] position of the ball."""
+    return np.array(self.named.data.qpos['ball_joint'][:3])
 
+  def ball_velocity(self):
+    """Returns the [vx, vy, vz, wx, wy, wz] velocity of the ball."""
+    return np.array(self.named.data.qvel['ball_joint'])
 class Kick(base.Task):
-  """A Cartpole_ball `Task` to kick the ball.
+  """A one_joint_ball `Task` to kick the ball.
 
   State is initialized either close to the target configuration or at a random
   configuration.
   """
-  _CART_RANGE = (-.25, .25)
   _ANGLE_COSINE_RANGE = (.995, 1)
 
   def __init__(self, random=None):
@@ -123,17 +123,20 @@ class Kick(base.Task):
     Args:
       physics: An instance of `Physics`.
     """
-    physics.named.data.qpos['slider'] = -0.8 + .5*self.random.randn()
     physics.named.data.qpos['knee'] = np.pi + .01*self.random.randn()
-    physics.named.data.qvel['slider'] = 0.01 * self.random.randn()
     physics.named.data.qvel['knee'] = 0.01 * self.random.randn()
     super().initialize_episode(physics)
 
   def get_observation(self, physics):
     """Returns an observation of the (bounded) physics state."""
     obs = collections.OrderedDict()
-    obs['position'] = physics.bounded_position()
-    obs['velocity'] = physics.velocity()
+    # Pole: angle (cos/sin) and angular velocity
+    obs['pole_angle'] = np.array([physics.pole_angle_cosine()[0],
+                                  physics.named.data.xmat['lower_leg', 'xz']])
+    obs['pole_velocity'] = np.array([physics.named.data.qvel['knee'][0]])
+    # Ball: position and velocity
+    obs['ball_position'] = physics.ball_position()
+    obs['ball_velocity'] = physics.ball_velocity()[:3]   # linear vx, vy, vz
     return obs
 
   def get_reward(self, physics):

@@ -8,8 +8,8 @@ import environments.suite as suite
 from dm_control import viewer
 
 # CartPole "swingup" oder "balance" laden
-env = suite.load(domain_name="cartpole_ball", task_name="kick")
-# env = suite.load(domain_name="one_joint_ball", task_name="kick")
+# env = suite.load(domain_name="cartpole_ball", task_name="kick")
+env = suite.load(domain_name="one_joint_ball", task_name="kick")
 
 # Einfacher Random-Agent
 class RandomAgent:
