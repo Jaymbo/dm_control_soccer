@@ -52,32 +52,7 @@ def kick(time_limit=_DEFAULT_TIME_LIMIT, random=None,
   return control.Environment(
       physics, task, time_limit=time_limit, **environment_kwargs)
 
-
-def _make_model(n_poles):
-  """Generates an xml string defining a leg with `n_poles` bodies."""
-  xml_string = common.read_model(FILE)
-  if n_poles == 1:
-    return xml_string
-  mjcf = etree.fromstring(xml_string)
-  parent = mjcf.find('./worldbody/body/body')  # Find first pole.
-  # Make chain of poles.
-  for pole_index in range(2, n_poles+1):
-    child = etree.Element('body', name='pole_{}'.format(pole_index),
-                          pos='0 0 1', childclass='pole')
-    etree.SubElement(child, 'joint', name='hinge_{}'.format(pole_index))
-    etree.SubElement(child, 'geom', name='pole_{}'.format(pole_index))
-    parent.append(child)
-    parent = child
-  # Move plane down.
-  floor = mjcf.find('./worldbody/geom')
-  floor.set('pos', '0 0 {}'.format(1 - n_poles - .05))
-  # Move cameras back.
-  cameras = mjcf.findall('./worldbody/camera')
-  cameras[0].set('pos', '0 {} 1'.format(-1 - 2*n_poles))
-  cameras[1].set('pos', '0 {} 2'.format(-2*n_poles))
-  return etree.tostring(mjcf, pretty_print=True)
-
-
+class Physics(mujoco.Physics):
   """Physics simulation with additional features for the Cartpole domain."""
 
   def angular_vel(self):
